@@ -2,7 +2,7 @@
 
 from .data import generate_random_instance
 from .exact import solve_exact
-from .heuristic import solve_greedy
+from .heuristic import solve_greedy, solve_local_search
 from .models import WTASolution, WTAInstance
 
 __all__ = [
@@ -11,4 +11,5 @@ __all__ = [
     "generate_random_instance",
     "solve_exact",
     "solve_greedy",
+    "solve_local_search",
 ]

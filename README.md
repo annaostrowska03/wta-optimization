@@ -17,5 +17,4 @@ The Static WTA problem is a classic NP-hard combinatorial optimization challenge
 * Norbert Frydrysiak
 
 ---
-*Developed as a course project for Optimization in Data Analysis @ WUT.*
-```
+*Developed as a course project for Optimization in Data Analysis @ WUT.

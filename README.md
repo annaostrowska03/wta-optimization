@@ -12,9 +12,9 @@ The Static WTA problem is a classic NP-hard combinatorial optimization challenge
 
 ## Team
 
-* Anna Ostrowska
-* Gabriela Majstrak
-* Norbert Frydrysiak
+* [Anna Ostrowska](https://github.com/annaostrowska03)
+* [Gabriela Majstrak](https://github.com/GabrielaMajstrak)
+* [Norbert Frydrysiak](https://github.com/fantasy2fry)
 
 ---
 *Developed as a course project for Optimization in Data Analysis @ WUT.

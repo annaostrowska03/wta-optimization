@@ -1,15 +1,26 @@
-import csv
 import re
 from pathlib import Path
-from time import perf_counter
 
-import pandas as pd
 import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
 
 from wta_optimization.data import generate_random_instance, load_instance_from_file
 from wta_optimization.exact import solve_exact
-from wta_optimization.heuristic import solve_greedy, solve_local_search
+from wta_optimization.heuristic import (
+    solve_greedy,
+    solve_local_search,
+    solve_simulated_annealing,
+)
+from wta_optimization.models import WTAInstance, WTASolution
+
+
+METHOD_SPECS = [
+    ("greedy", "Greedy", "tab:orange"),
+    ("ls", "Greedy + Local Search", "tab:blue"),
+    ("sa", "Simulated Annealing", "tab:green"),
+    ("exact", "Exact MIP", "black"),
+]
 
 
 def _numeric_file_sort_key(path: Path) -> tuple[int, str]:
@@ -18,42 +29,132 @@ def _numeric_file_sort_key(path: Path) -> tuple[int, str]:
     return numeric_part, path.name
 
 
-def run_benchmark(from_file: bool = False, dir_path: str | Path = "data/WTA") -> pd.DataFrame:
+def _evaluate_methods(instance: WTAInstance) -> dict[str, WTASolution]:
+    sol_greedy = solve_greedy(instance)
+    sol_ls = solve_local_search(instance)
+    sol_sa = solve_simulated_annealing(instance)
+    sol_exact = solve_exact(instance, num_piecewise_segments=20)
+    return {
+        "greedy": sol_greedy,
+        "ls": sol_ls,
+        "sa": sol_sa,
+        "exact": sol_exact,
+    }
+
+
+def _gap_pct(candidate_obj: float, reference_obj: float) -> float:
+    base_obj = reference_obj if reference_obj > 1e-9 else 1e-9
+    return max(0.0, (candidate_obj - reference_obj) / base_obj * 100)
+
+
+def _build_result_row(prefix_data: dict[str, int | str], solutions: dict[str, WTASolution]) -> dict[str, int | str | float]:
+    exact_obj = solutions["exact"].objective_value
+    row: dict[str, int | str | float] = dict(prefix_data)
+    for method_key, _, _ in METHOD_SPECS:
+        solution = solutions[method_key]
+        row[f"{method_key}_time_s"] = solution.runtime_seconds
+        row[f"{method_key}_obj"] = solution.objective_value
+        if method_key != "exact":
+            row[f"optimality_gap_pct_{method_key}"] = _gap_pct(solution.objective_value, exact_obj)
+    return row
+
+
+def _aggregate_for_plot(df: pd.DataFrame, from_file: bool) -> pd.DataFrame:
+    if from_file:
+        return df.copy()
+
+    numeric_columns = [column for column in df.columns if column not in {"seed"}]
+    aggregation = {
+        column: "mean"
+        for column in numeric_columns
+        if column != "size"
+    }
+    return df.groupby("size", as_index=False).agg(aggregation)
+
+
+def _to_tradeoff_frame(df: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for method_key, label, color in METHOD_SPECS:
+        records.append(
+            {
+                "method": label,
+                "runtime_s": df[f"{method_key}_time_s"].mean(),
+                "objective_value": df[f"{method_key}_obj"].mean(),
+                "color": color,
+            }
+        )
+    return pd.DataFrame(records)
+
+
+def _target_loads(solution: WTASolution) -> list[int]:
+    return [sum(row[target_index] for row in solution.assignment) for target_index in range(len(solution.assignment[0]))]
+
+
+def _solve_and_record_sensitivity(
+    scenario: str,
+    instance: WTAInstance,
+    primary_focus_target: int,
+    primary_focus_label: str,
+    secondary_focus_target: int | None = None,
+    secondary_focus_label: str | None = None,
+) -> list[dict[str, str | float | int]]:
+    solutions = _evaluate_methods(instance)
+    exact_obj = solutions["exact"].objective_value
+    rows = []
+
+    for method_key, label, _ in METHOD_SPECS:
+        solution = solutions[method_key]
+        target_loads = _target_loads(solution)
+        rows.append(
+            {
+                "scenario": scenario,
+                "method": label,
+                "runtime_s": solution.runtime_seconds,
+                "objective_value": solution.objective_value,
+                "optimality_gap_pct": 0.0 if method_key == "exact" else _gap_pct(solution.objective_value, exact_obj),
+                "primary_focus_label": primary_focus_label,
+                "primary_focus_allocations": target_loads[primary_focus_target],
+                "secondary_focus_label": secondary_focus_label or "",
+                "secondary_focus_allocations": target_loads[secondary_focus_target] if secondary_focus_target is not None else 0,
+                "allocation_profile": ",".join(str(value) for value in target_loads),
+            }
+        )
+
+    return rows
+
+
+def run_benchmark(
+    from_file: bool = False,
+    dir_path: str | Path = "data/WTA",
+    sizes: list[int] | None = None,
+    seeds: list[int] | None = None,
+) -> pd.DataFrame:
+    results = []
+
     if from_file:
         dir_path = Path(dir_path)
         files = sorted(dir_path.glob("*.txt"), key=_numeric_file_sort_key)
-        results = []
-        
+
         print("Starting WTA Optimization Benchmark (From Files)...")
-        print(f"{'File':<20} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8}")
-        
+        print(
+            f"{'File':<20} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | "
+            f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8}"
+        )
+
         for index, file in enumerate(files, start=1):
             print(f"Processing [{index}/{len(files)}]: {file.name}")
             instance = load_instance_from_file(file)
-            
-            sol_greedy = solve_greedy(instance)
-            sol_ls = solve_local_search(instance)
-            sol_exact = solve_exact(instance, num_piecewise_segments=20)
-            
-            base_obj = sol_exact.objective_value if sol_exact.objective_value > 1e-9 else 1e-9
-            
-            gap_pct_greedy = max(0.0, (sol_greedy.objective_value - sol_exact.objective_value) / base_obj * 100)
-            gap_pct_ls = max(0.0, (sol_ls.objective_value - sol_exact.objective_value) / base_obj * 100)
-            
-            print(f"{file.name:<20} | {sol_exact.runtime_seconds:<10.4f} | {sol_greedy.runtime_seconds:<10.4f} | {sol_ls.runtime_seconds:<10.4f} | {gap_pct_greedy:<8.2f} | {gap_pct_ls:<8.2f}")
-            
-            results.append({
-                "file": file.name,
-                "exact_time_s": sol_exact.runtime_seconds,
-                "greedy_time_s": sol_greedy.runtime_seconds,
-                "ls_time_s": sol_ls.runtime_seconds,
-                "exact_obj": sol_exact.objective_value,
-                "greedy_obj": sol_greedy.objective_value,
-                "ls_obj": sol_ls.objective_value,
-                "optimality_gap_pct_greedy": gap_pct_greedy,
-                "optimality_gap_pct_ls": gap_pct_ls
-            })
-        
+            solutions = _evaluate_methods(instance)
+            row = _build_result_row({"file": file.name}, solutions)
+            results.append(row)
+
+            print(
+                f"{file.name:<20} | {row['exact_time_s']:<10.4f} | {row['greedy_time_s']:<10.4f} | "
+                f"{row['ls_time_s']:<10.4f} | {row['sa_time_s']:<10.4f} | "
+                f"{row['optimality_gap_pct_greedy']:<8.2f} | {row['optimality_gap_pct_ls']:<8.2f} | "
+                f"{row['optimality_gap_pct_sa']:<8.2f}"
+            )
+
         output_dir = Path("results")
         output_dir.mkdir(exist_ok=True)
         df = pd.DataFrame(results)
@@ -61,81 +162,67 @@ def run_benchmark(from_file: bool = False, dir_path: str | Path = "data/WTA") ->
         df.to_csv(csv_path, index=False)
         print(f"\nResults saved to: {csv_path}")
         return df
-    sizes = [5, 10, 15, 20, 25, 30]  # List of grid sizes (weapons & targets)
-    seeds = [42, 43, 44]            # Multiple seeds to average out the results
-    
-    results = []
-    
+
+    sizes = sizes or [5, 10, 15, 20, 25, 30]
+    seeds = seeds or [42, 43, 44]
+
     print("Starting WTA Optimization Benchmark (Extended)...")
-    print(f"{'Size':<5} | {'Seed':<4} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8}")
-    
+    print(
+        f"{'Size':<5} | {'Seed':<4} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | "
+        f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8}"
+    )
+
     for size in sizes:
         for seed in seeds:
-            instance = generate_random_instance(
-                weapons=size, 
-                targets=size, 
-                seed=seed
+            instance = generate_random_instance(weapons=size, targets=size, seed=seed)
+            solutions = _evaluate_methods(instance)
+            row = _build_result_row({"size": size, "seed": seed}, solutions)
+            results.append(row)
+
+            print(
+                f"{size:<5} | {seed:<4} | {row['exact_time_s']:<10.4f} | {row['greedy_time_s']:<10.4f} | "
+                f"{row['ls_time_s']:<10.4f} | {row['sa_time_s']:<10.4f} | "
+                f"{row['optimality_gap_pct_greedy']:<8.2f} | {row['optimality_gap_pct_ls']:<8.2f} | "
+                f"{row['optimality_gap_pct_sa']:<8.2f}"
             )
-            
-            sol_greedy = solve_greedy(instance)
-            sol_ls = solve_local_search(instance)
-            sol_exact = solve_exact(instance, num_piecewise_segments=20)
-            
-            base_obj = sol_exact.objective_value if sol_exact.objective_value > 1e-9 else 1e-9
-            
-            gap_pct_greedy = max(0.0, (sol_greedy.objective_value - sol_exact.objective_value) / base_obj * 100)
-            gap_pct_ls = max(0.0, (sol_ls.objective_value - sol_exact.objective_value) / base_obj * 100)
-            
-            print(f"{size:<5} | {seed:<4} | {sol_exact.runtime_seconds:<10.4f} | {sol_greedy.runtime_seconds:<10.4f} | {sol_ls.runtime_seconds:<10.4f} | {gap_pct_greedy:<8.2f} | {gap_pct_ls:<8.2f}")
-            
-            results.append({
-                "size": size,
-                "seed": seed,
-                "exact_time_s": sol_exact.runtime_seconds,
-                "greedy_time_s": sol_greedy.runtime_seconds,
-                "ls_time_s": sol_ls.runtime_seconds,
-                "exact_obj": sol_exact.objective_value,
-                "greedy_obj": sol_greedy.objective_value,
-                "ls_obj": sol_ls.objective_value,
-                "optimality_gap_pct_greedy": gap_pct_greedy,
-                "optimality_gap_pct_ls": gap_pct_ls
-            })
-            
+
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
     df = pd.DataFrame(results)
     csv_path = output_dir / "benchmark_results.csv"
     df.to_csv(csv_path, index=False)
     print(f"\nResults saved to: {csv_path}")
-    
     return df
 
-def plot_results(df, from_file: bool = False):
+
+def plot_results(df: pd.DataFrame, from_file: bool = False) -> None:
     sns.set_theme(style="whitegrid")
     output_dir = Path("results")
+    plot_df = _aggregate_for_plot(df, from_file=from_file)
     x_col = "file" if from_file else "size"
-    time_title = "Execution Time Comparison" if from_file else "Execution Time Comparison (Log Scale)"
     x_label = "Input File" if from_file else "Problem Size (Number of Weapons and Targets)"
-    
-    plt.figure(figsize=(10, 6))
-    sns.lineplot(data=df, x=x_col, y="exact_time_s", marker="o", label="Exact (PuLP MILP)")
-    sns.lineplot(data=df, x=x_col, y="greedy_time_s", marker="o", label="Heuristic (Greedy)")
-    sns.lineplot(data=df, x=x_col, y="ls_time_s", marker="o", label="Heuristic (Local Search)")
+    time_title = "Execution Time Comparison" if from_file else "Execution Time Comparison (Log Scale)"
+
+    plt.figure(figsize=(11, 6))
+    for method_key, label, _ in METHOD_SPECS:
+        plt.plot(plot_df[x_col], plot_df[f"{method_key}_time_s"], marker="o", label=label)
     if not from_file:
         plt.yscale("log")
     plt.title(time_title)
     plt.xlabel(x_label)
-    plt.ylabel("Time (seconds) - Logarythmic")
+    plt.ylabel("Time (seconds)")
     plt.legend()
     if from_file:
         plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
-    plt.savefig(output_dir / "time_comparison.png", dpi=300) if not from_file else plt.savefig(output_dir / "time_comparison_from_files.png", dpi=300)
+    plt.savefig(output_dir / ("time_comparison_from_files.png" if from_file else "time_comparison.png"), dpi=300)
     plt.close()
-    
-    plt.figure(figsize=(10, 6))
-    sns.lineplot(data=df, x=x_col, y="optimality_gap_pct_greedy", marker="o", color="red", label="Greedy Gap %")
-    sns.lineplot(data=df, x=x_col, y="optimality_gap_pct_ls", marker="o", color="blue", label="Local Search Gap %")
+
+    plt.figure(figsize=(11, 6))
+    for method_key, label, color in METHOD_SPECS:
+        if method_key == "exact":
+            continue
+        plt.plot(plot_df[x_col], plot_df[f"optimality_gap_pct_{method_key}"], marker="o", color=color, label=f"{label} Gap %")
     plt.title("Optimality Gap Compared To Exact Solution")
     plt.xlabel(x_label)
     plt.ylabel("Optimality Gap (%)")
@@ -143,14 +230,211 @@ def plot_results(df, from_file: bool = False):
     if from_file:
         plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
-    plt.savefig(output_dir / "optimality_gap.png", dpi=300) if not from_file else plt.savefig(output_dir / "optimality_gap_from_files.png", dpi=300)
+    plt.savefig(output_dir / ("optimality_gap_from_files.png" if from_file else "optimality_gap.png"), dpi=300)
     plt.close()
-    
+
     print(f"Plots saved to {output_dir}/")
+
+
+def plot_tradeoff(df: pd.DataFrame, from_file: bool = False) -> None:
+    sns.set_theme(style="whitegrid")
+    output_dir = Path("results")
+    tradeoff_df = _to_tradeoff_frame(df)
+
+    plt.figure(figsize=(9, 6))
+    for row in tradeoff_df.itertuples():
+        plt.scatter(row.runtime_s, row.objective_value, s=120, color=row.color)
+        plt.annotate(row.method, (row.runtime_s, row.objective_value), textcoords="offset points", xytext=(8, 6))
+    plt.title("Time vs Objective Trade-off")
+    plt.xlabel("Average Runtime (seconds)")
+    plt.ylabel("Average Objective Value")
+    plt.tight_layout()
+    plt.savefig(output_dir / ("tradeoff_curve_from_files.png" if from_file else "tradeoff_curve.png"), dpi=300)
+    plt.close()
+
+    csv_path = output_dir / ("tradeoff_curve_from_files.csv" if from_file else "tradeoff_curve.csv")
+    tradeoff_df.drop(columns=["color"]).to_csv(csv_path, index=False)
+    print(f"Trade-off summary saved to {csv_path}")
+
+
+def run_warm_start_study(
+    sizes: list[int] | None = None,
+    seeds: list[int] | None = None,
+) -> pd.DataFrame:
+    sizes = sizes or [10, 15, 20]
+    seeds = seeds or [42, 43, 44]
+    results = []
+
+    print("\nStarting Warm Start Study...")
+    print(f"{'Size':<5} | {'Seed':<4} | {'Cold MIP':<10} | {'Warm MIP':<10} | {'Speedup':<8}")
+
+    for size in sizes:
+        for seed in seeds:
+            instance = generate_random_instance(weapons=size, targets=size, seed=seed)
+            greedy_solution = solve_greedy(instance)
+            cold_solution = solve_exact(instance, num_piecewise_segments=20)
+            warm_solution = solve_exact(instance, num_piecewise_segments=20, warm_start=greedy_solution)
+
+            speedup = cold_solution.runtime_seconds / max(warm_solution.runtime_seconds, 1e-9)
+            results.append(
+                {
+                    "size": size,
+                    "seed": seed,
+                    "greedy_obj": greedy_solution.objective_value,
+                    "exact_cold_time_s": cold_solution.runtime_seconds,
+                    "exact_warm_time_s": warm_solution.runtime_seconds,
+                    "exact_cold_obj": cold_solution.objective_value,
+                    "exact_warm_obj": warm_solution.objective_value,
+                    "speedup_ratio": speedup,
+                    "warm_start_gap_pct": _gap_pct(greedy_solution.objective_value, cold_solution.objective_value),
+                }
+            )
+
+            print(
+                f"{size:<5} | {seed:<4} | {cold_solution.runtime_seconds:<10.4f} | "
+                f"{warm_solution.runtime_seconds:<10.4f} | {speedup:<8.2f}"
+            )
+
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    df = pd.DataFrame(results)
+    csv_path = output_dir / "warm_start_study.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"Warm start results saved to: {csv_path}")
+    return df
+
+
+def plot_warm_start_study(df: pd.DataFrame) -> None:
+    sns.set_theme(style="whitegrid")
+    output_dir = Path("results")
+    plot_df = df.groupby("size", as_index=False).agg(
+        exact_cold_time_s=("exact_cold_time_s", "mean"),
+        exact_warm_time_s=("exact_warm_time_s", "mean"),
+        speedup_ratio=("speedup_ratio", "mean"),
+    )
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(plot_df["size"], plot_df["exact_cold_time_s"], marker="o", label="Exact MIP (cold start)")
+    plt.plot(plot_df["size"], plot_df["exact_warm_time_s"], marker="o", label="Exact MIP (warm start)")
+    plt.title("Warm Start Impact on Solver Runtime")
+    plt.xlabel("Problem Size")
+    plt.ylabel("Average Runtime (seconds)")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_dir / "warm_start_time_comparison.png", dpi=300)
+    plt.close()
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=plot_df, x="size", y="speedup_ratio", color="tab:purple")
+    plt.title("Warm Start Speedup")
+    plt.xlabel("Problem Size")
+    plt.ylabel("Cold / Warm Runtime Ratio")
+    plt.tight_layout()
+    plt.savefig(output_dir / "warm_start_speedup.png", dpi=300)
+    plt.close()
+
+
+def run_sensitivity_analysis() -> pd.DataFrame:
+    high_value_base = generate_random_instance(weapons=12, targets=12, seed=2026)
+    high_value_targets = list(high_value_base.target_values)
+    high_value_targets[0] *= 100.0
+    high_value_instance = WTAInstance(
+        weapons=high_value_base.weapons,
+        targets=high_value_base.targets,
+        target_values=tuple(high_value_targets),
+        destruction_probabilities=high_value_base.destruction_probabilities,
+    )
+
+    reliability_vs_quality_instance = WTAInstance(
+        weapons=8,
+        targets=3,
+        target_values=(180.0, 45.0, 20.0),
+        destruction_probabilities=(
+            (0.45, 0.99, 0.15),
+            (0.50, 0.98, 0.20),
+            (0.55, 0.97, 0.15),
+            (0.60, 0.96, 0.25),
+            (0.72, 0.30, 0.40),
+            (0.68, 0.25, 0.55),
+            (0.75, 0.20, 0.35),
+            (0.70, 0.25, 0.45),
+        ),
+    )
+
+    rows = []
+    rows.extend(
+        _solve_and_record_sensitivity(
+            scenario="High Value Target",
+            instance=high_value_instance,
+            primary_focus_target=0,
+            primary_focus_label="Weapons on 100x target",
+        )
+    )
+    rows.extend(
+        _solve_and_record_sensitivity(
+            scenario="Reliability vs Quality",
+            instance=reliability_vs_quality_instance,
+            primary_focus_target=0,
+            primary_focus_label="Weapons on highest-value target",
+            secondary_focus_target=1,
+            secondary_focus_label="Weapons on most reliable target",
+        )
+    )
+
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    df = pd.DataFrame(rows)
+    csv_path = output_dir / "sensitivity_analysis.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"Sensitivity analysis saved to: {csv_path}")
+    return df
+
+
+def plot_sensitivity_analysis(df: pd.DataFrame) -> None:
+    sns.set_theme(style="whitegrid")
+    output_dir = Path("results")
+
+    plt.figure(figsize=(11, 6))
+    sns.barplot(data=df, x="scenario", y="objective_value", hue="method")
+    plt.title("Sensitivity Analysis: Objective Value by Scenario")
+    plt.xlabel("")
+    plt.ylabel("Objective Value")
+    plt.tight_layout()
+    plt.savefig(output_dir / "sensitivity_objective.png", dpi=300)
+    plt.close()
+
+    plt.figure(figsize=(11, 6))
+    sns.barplot(data=df, x="scenario", y="primary_focus_allocations", hue="method")
+    plt.title("Sensitivity Analysis: Allocation to Primary Focus Target")
+    plt.xlabel("")
+    plt.ylabel("Assigned Weapons")
+    plt.tight_layout()
+    plt.savefig(output_dir / "sensitivity_primary_focus.png", dpi=300)
+    plt.close()
+
+    secondary_df = df[df["secondary_focus_label"] != ""]
+    if not secondary_df.empty:
+        plt.figure(figsize=(11, 6))
+        sns.barplot(data=secondary_df, x="scenario", y="secondary_focus_allocations", hue="method")
+        plt.title("Sensitivity Analysis: Allocation to Secondary Focus Target")
+        plt.xlabel("")
+        plt.ylabel("Assigned Weapons")
+        plt.tight_layout()
+        plt.savefig(output_dir / "sensitivity_secondary_focus.png", dpi=300)
+        plt.close()
 
 
 if __name__ == "__main__":
     df_results_from_files = run_benchmark(from_file=True)
     plot_results(df_results_from_files, from_file=True)
+    plot_tradeoff(df_results_from_files, from_file=True)
+
     df_results = run_benchmark()
     plot_results(df_results)
+    plot_tradeoff(df_results)
+
+    warm_start_df = run_warm_start_study()
+    plot_warm_start_study(warm_start_df)
+
+    sensitivity_df = run_sensitivity_analysis()
+    plot_sensitivity_analysis(sensitivity_df)

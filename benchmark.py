@@ -1,4 +1,5 @@
 import csv
+import re
 from pathlib import Path
 from time import perf_counter
 
@@ -11,16 +12,23 @@ from wta_optimization.exact import solve_exact
 from wta_optimization.heuristic import solve_greedy, solve_local_search
 
 
+def _numeric_file_sort_key(path: Path) -> tuple[int, str]:
+    match = re.search(r"(\d+)", path.stem)
+    numeric_part = int(match.group(1)) if match else 10**9
+    return numeric_part, path.name
+
+
 def run_benchmark(from_file: bool = False, dir_path: str | Path = "data/WTA") -> pd.DataFrame:
     if from_file:
         dir_path = Path(dir_path)
-        files = sorted(dir_path.glob("*.txt"))
+        files = sorted(dir_path.glob("*.txt"), key=_numeric_file_sort_key)
         results = []
         
         print("Starting WTA Optimization Benchmark (From Files)...")
         print(f"{'File':<20} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8}")
         
-        for file in files:
+        for index, file in enumerate(files, start=1):
+            print(f"Processing [{index}/{len(files)}]: {file.name}")
             instance = load_instance_from_file(file)
             
             sol_greedy = solve_greedy(instance)
@@ -105,27 +113,35 @@ def run_benchmark(from_file: bool = False, dir_path: str | Path = "data/WTA") ->
 def plot_results(df, from_file: bool = False):
     sns.set_theme(style="whitegrid")
     output_dir = Path("results")
+    x_col = "file" if from_file else "size"
+    time_title = "Execution Time Comparison" if from_file else "Execution Time Comparison (Log Scale)"
+    x_label = "Input File" if from_file else "Problem Size (Number of Weapons and Targets)"
     
     plt.figure(figsize=(10, 6))
-    sns.lineplot(data=df, x="size", y="exact_time_s", marker="o", label="Exact (PuLP MILP)")
-    sns.lineplot(data=df, x="size", y="greedy_time_s", marker="o", label="Heuristic (Greedy)")
-    sns.lineplot(data=df, x="size", y="ls_time_s", marker="o", label="Heuristic (Local Search)")
-    plt.yscale("log")
-    plt.title("Execution Time Comparison (Log Scale)")
-    plt.xlabel("Problem Size (Number of Weapons and Targets)")
+    sns.lineplot(data=df, x=x_col, y="exact_time_s", marker="o", label="Exact (PuLP MILP)")
+    sns.lineplot(data=df, x=x_col, y="greedy_time_s", marker="o", label="Heuristic (Greedy)")
+    sns.lineplot(data=df, x=x_col, y="ls_time_s", marker="o", label="Heuristic (Local Search)")
+    if not from_file:
+        plt.yscale("log")
+    plt.title(time_title)
+    plt.xlabel(x_label)
     plt.ylabel("Time (seconds) - Logarythmic")
     plt.legend()
+    if from_file:
+        plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
     plt.savefig(output_dir / "time_comparison.png", dpi=300) if not from_file else plt.savefig(output_dir / "time_comparison_from_files.png", dpi=300)
     plt.close()
     
     plt.figure(figsize=(10, 6))
-    sns.lineplot(data=df, x="size", y="optimality_gap_pct_greedy", marker="o", color="red", label="Greedy Gap %")
-    sns.lineplot(data=df, x="size", y="optimality_gap_pct_ls", marker="o", color="blue", label="Local Search Gap %")
+    sns.lineplot(data=df, x=x_col, y="optimality_gap_pct_greedy", marker="o", color="red", label="Greedy Gap %")
+    sns.lineplot(data=df, x=x_col, y="optimality_gap_pct_ls", marker="o", color="blue", label="Local Search Gap %")
     plt.title("Optimality Gap Compared To Exact Solution")
-    plt.xlabel("Problem Size (Number of Weapons and Targets)")
+    plt.xlabel(x_label)
     plt.ylabel("Optimality Gap (%)")
     plt.legend()
+    if from_file:
+        plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
     plt.savefig(output_dir / "optimality_gap.png", dpi=300) if not from_file else plt.savefig(output_dir / "optimality_gap_from_files.png", dpi=300)
     plt.close()
@@ -135,6 +151,6 @@ def plot_results(df, from_file: bool = False):
 
 if __name__ == "__main__":
     df_results_from_files = run_benchmark(from_file=True)
-    plot_results(df_results_from_files)
+    plot_results(df_results_from_files, from_file=True)
     df_results = run_benchmark()
     plot_results(df_results)

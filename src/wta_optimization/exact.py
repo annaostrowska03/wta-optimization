@@ -1,21 +1,47 @@
 from __future__ import annotations
 
 import math
-from itertools import product
 from time import perf_counter
+from typing import Sequence
 
 import pulp
 
 from .models import WTAInstance, WTASolution, objective_value
 
 
-def solve_exact(instance: WTAInstance, num_piecewise_segments: int = 20) -> WTASolution:
+def _normalize_warm_start(
+    instance: WTAInstance,
+    warm_start: WTASolution | Sequence[Sequence[int]] | None,
+) -> tuple[tuple[int, ...], ...] | None:
+    if warm_start is None:
+        return None
+
+    assignment = warm_start.assignment if isinstance(warm_start, WTASolution) else warm_start
+    if len(assignment) != instance.weapons:
+        raise ValueError("warm start assignment row count must match the number of weapons")
+
+    normalized_assignment: list[tuple[int, ...]] = []
+    for row in assignment:
+        if len(row) != instance.targets:
+            raise ValueError("each warm start assignment row must match the number of targets")
+        normalized_assignment.append(tuple(int(bool(value)) for value in row))
+
+    return tuple(normalized_assignment)
+
+
+def solve_exact(
+    instance: WTAInstance,
+    num_piecewise_segments: int = 20,
+    warm_start: WTASolution | Sequence[Sequence[int]] | None = None,
+    time_limit_seconds: float | None = None,
+) -> WTASolution:
     """
     Solve the Static WTA problem using an exact MILP formulation via pulp.
     Uses log transformation mapping and piecewise linear approximation for the 
     exponential objective reduction.
     """
     start = perf_counter()
+    warm_start_assignment = _normalize_warm_start(instance, warm_start)
 
     prob = pulp.LpProblem("Static_WTA_MIP", pulp.LpMinimize)
 
@@ -25,6 +51,11 @@ def solve_exact(instance: WTAInstance, num_piecewise_segments: int = 20) -> WTAS
           
     z = [pulp.LpVariable(f"z_{j}", lowBound=0.0) for j in range(instance.targets)]
     y = [pulp.LpVariable(f"y_{j}") for j in range(instance.targets)]
+
+    if warm_start_assignment is not None:
+        for i in range(instance.weapons):
+            for j in range(instance.targets):
+                x[i][j].setInitialValue(warm_start_assignment[i][j])
 
     # Objective: Minimize sum(V_j * z_j) where z_j ~ exp(y_j)
     prob += pulp.lpSum([instance.target_values[j] * z[j] for j in range(instance.targets)])
@@ -58,7 +89,13 @@ def solve_exact(instance: WTAInstance, num_piecewise_segments: int = 20) -> WTAS
         else:
             prob += z[j] >= 1.0
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    solver = pulp.PULP_CBC_CMD(
+        msg=0,
+        warmStart=warm_start_assignment is not None,
+        keepFiles=warm_start_assignment is not None,
+        timeLimit=time_limit_seconds,
+    )
+    prob.solve(solver)
 
     assignment = [[0 for _ in range(instance.targets)] for _ in range(instance.weapons)]
     for i in range(instance.weapons):
@@ -73,5 +110,5 @@ def solve_exact(instance: WTAInstance, num_piecewise_segments: int = 20) -> WTAS
         assignment=frozen_assignment,
         objective_value=objective_value(instance, frozen_assignment),
         runtime_seconds=runtime,
-        method="exact_mip_pulp_linearized",
+        method="exact_mip_pulp_linearized_warm_start" if warm_start_assignment is not None else "exact_mip_pulp_linearized",
     )

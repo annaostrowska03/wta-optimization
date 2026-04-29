@@ -1,3 +1,4 @@
+import argparse
 import re
 from pathlib import Path
 
@@ -22,6 +23,8 @@ METHOD_SPECS = [
     ("exact", "Exact MIP", "black"),
 ]
 
+EXACT_TIME_LIMIT_SECONDS = 5400.0
+
 
 def _numeric_file_sort_key(path: Path) -> tuple[int, str]:
     match = re.search(r"(\d+)", path.stem)
@@ -29,11 +32,20 @@ def _numeric_file_sort_key(path: Path) -> tuple[int, str]:
     return numeric_part, path.name
 
 
-def _evaluate_methods(instance: WTAInstance) -> dict[str, WTASolution]:
+def _evaluate_methods(
+    instance: WTAInstance,
+    exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
+    use_exact_warm_start: bool = True,
+) -> dict[str, WTASolution]:
     sol_greedy = solve_greedy(instance)
     sol_ls = solve_local_search(instance)
     sol_sa = solve_simulated_annealing(instance)
-    sol_exact = solve_exact(instance, num_piecewise_segments=20)
+    sol_exact = solve_exact(
+        instance,
+        num_piecewise_segments=20,
+        warm_start=sol_greedy if use_exact_warm_start else None,
+        time_limit_seconds=exact_time_limit_seconds,
+    )
     return {
         "greedy": sol_greedy,
         "ls": sol_ls,
@@ -54,6 +66,7 @@ def _build_result_row(prefix_data: dict[str, int | str], solutions: dict[str, WT
         solution = solutions[method_key]
         row[f"{method_key}_time_s"] = solution.runtime_seconds
         row[f"{method_key}_obj"] = solution.objective_value
+        row[f"{method_key}_status"] = solution.status
         if method_key != "exact":
             row[f"optimality_gap_pct_{method_key}"] = _gap_pct(solution.objective_value, exact_obj)
     return row
@@ -63,7 +76,11 @@ def _aggregate_for_plot(df: pd.DataFrame, from_file: bool) -> pd.DataFrame:
     if from_file:
         return df.copy()
 
-    numeric_columns = [column for column in df.columns if column not in {"seed"}]
+    numeric_columns = [
+        column
+        for column in df.columns
+        if column != "seed" and pd.api.types.is_numeric_dtype(df[column])
+    ]
     aggregation = {
         column: "mean"
         for column in numeric_columns
@@ -97,8 +114,14 @@ def _solve_and_record_sensitivity(
     primary_focus_label: str,
     secondary_focus_target: int | None = None,
     secondary_focus_label: str | None = None,
+    exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
+    use_exact_warm_start: bool = True,
 ) -> list[dict[str, str | float | int]]:
-    solutions = _evaluate_methods(instance)
+    solutions = _evaluate_methods(
+        instance,
+        exact_time_limit_seconds=exact_time_limit_seconds,
+        use_exact_warm_start=use_exact_warm_start,
+    )
     exact_obj = solutions["exact"].objective_value
     rows = []
 
@@ -128,6 +151,8 @@ def run_benchmark(
     dir_path: str | Path = "data/WTA",
     sizes: list[int] | None = None,
     seeds: list[int] | None = None,
+    exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
+    use_exact_warm_start: bool = True,
 ) -> pd.DataFrame:
     results = []
 
@@ -136,15 +161,21 @@ def run_benchmark(
         files = sorted(dir_path.glob("*.txt"), key=_numeric_file_sort_key)
 
         print("Starting WTA Optimization Benchmark (From Files)...")
+        print(f"Exact MIP time limit per instance: {exact_time_limit_seconds / 3600:.1f} h")
+        print(f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
         print(
             f"{'File':<20} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | "
-            f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8}"
+            f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8} | {'Exact Status':<12}"
         )
 
         for index, file in enumerate(files, start=1):
             print(f"Processing [{index}/{len(files)}]: {file.name}")
             instance = load_instance_from_file(file)
-            solutions = _evaluate_methods(instance)
+            solutions = _evaluate_methods(
+                instance,
+                exact_time_limit_seconds=exact_time_limit_seconds,
+                use_exact_warm_start=use_exact_warm_start,
+            )
             row = _build_result_row({"file": file.name}, solutions)
             results.append(row)
 
@@ -152,7 +183,7 @@ def run_benchmark(
                 f"{file.name:<20} | {row['exact_time_s']:<10.4f} | {row['greedy_time_s']:<10.4f} | "
                 f"{row['ls_time_s']:<10.4f} | {row['sa_time_s']:<10.4f} | "
                 f"{row['optimality_gap_pct_greedy']:<8.2f} | {row['optimality_gap_pct_ls']:<8.2f} | "
-                f"{row['optimality_gap_pct_sa']:<8.2f}"
+                f"{row['optimality_gap_pct_sa']:<8.2f} | {row['exact_status']:<12}"
             )
 
         output_dir = Path("results")
@@ -167,15 +198,21 @@ def run_benchmark(
     seeds = seeds or [42, 43, 44]
 
     print("Starting WTA Optimization Benchmark (Extended)...")
+    print(f"Exact MIP time limit per instance: {exact_time_limit_seconds / 3600:.1f} h")
+    print(f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
     print(
         f"{'Size':<5} | {'Seed':<4} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | "
-        f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8}"
+        f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8} | {'Exact Status':<12}"
     )
 
     for size in sizes:
         for seed in seeds:
             instance = generate_random_instance(weapons=size, targets=size, seed=seed)
-            solutions = _evaluate_methods(instance)
+            solutions = _evaluate_methods(
+                instance,
+                exact_time_limit_seconds=exact_time_limit_seconds,
+                use_exact_warm_start=use_exact_warm_start,
+            )
             row = _build_result_row({"size": size, "seed": seed}, solutions)
             results.append(row)
 
@@ -183,7 +220,7 @@ def run_benchmark(
                 f"{size:<5} | {seed:<4} | {row['exact_time_s']:<10.4f} | {row['greedy_time_s']:<10.4f} | "
                 f"{row['ls_time_s']:<10.4f} | {row['sa_time_s']:<10.4f} | "
                 f"{row['optimality_gap_pct_greedy']:<8.2f} | {row['optimality_gap_pct_ls']:<8.2f} | "
-                f"{row['optimality_gap_pct_sa']:<8.2f}"
+                f"{row['optimality_gap_pct_sa']:<8.2f} | {row['exact_status']:<12}"
             )
 
     output_dir = Path("results")
@@ -260,6 +297,7 @@ def plot_tradeoff(df: pd.DataFrame, from_file: bool = False) -> None:
 def run_warm_start_study(
     sizes: list[int] | None = None,
     seeds: list[int] | None = None,
+    exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
 ) -> pd.DataFrame:
     sizes = sizes or [10, 15, 20]
     seeds = seeds or [42, 43, 44]
@@ -272,8 +310,17 @@ def run_warm_start_study(
         for seed in seeds:
             instance = generate_random_instance(weapons=size, targets=size, seed=seed)
             greedy_solution = solve_greedy(instance)
-            cold_solution = solve_exact(instance, num_piecewise_segments=20)
-            warm_solution = solve_exact(instance, num_piecewise_segments=20, warm_start=greedy_solution)
+            cold_solution = solve_exact(
+                instance,
+                num_piecewise_segments=20,
+                time_limit_seconds=exact_time_limit_seconds,
+            )
+            warm_solution = solve_exact(
+                instance,
+                num_piecewise_segments=20,
+                warm_start=greedy_solution,
+                time_limit_seconds=exact_time_limit_seconds,
+            )
 
             speedup = cold_solution.runtime_seconds / max(warm_solution.runtime_seconds, 1e-9)
             results.append(
@@ -285,6 +332,8 @@ def run_warm_start_study(
                     "exact_warm_time_s": warm_solution.runtime_seconds,
                     "exact_cold_obj": cold_solution.objective_value,
                     "exact_warm_obj": warm_solution.objective_value,
+                    "exact_cold_status": cold_solution.status,
+                    "exact_warm_status": warm_solution.status,
                     "speedup_ratio": speedup,
                     "warm_start_gap_pct": _gap_pct(greedy_solution.objective_value, cold_solution.objective_value),
                 }
@@ -334,7 +383,10 @@ def plot_warm_start_study(df: pd.DataFrame) -> None:
     plt.close()
 
 
-def run_sensitivity_analysis() -> pd.DataFrame:
+def run_sensitivity_analysis(
+    exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
+    use_exact_warm_start: bool = True,
+) -> pd.DataFrame:
     high_value_base = generate_random_instance(weapons=12, targets=12, seed=2026)
     high_value_targets = list(high_value_base.target_values)
     high_value_targets[0] *= 100.0
@@ -368,6 +420,8 @@ def run_sensitivity_analysis() -> pd.DataFrame:
             instance=high_value_instance,
             primary_focus_target=0,
             primary_focus_label="Weapons on 100x target",
+            exact_time_limit_seconds=exact_time_limit_seconds,
+            use_exact_warm_start=use_exact_warm_start,
         )
     )
     rows.extend(
@@ -378,6 +432,8 @@ def run_sensitivity_analysis() -> pd.DataFrame:
             primary_focus_label="Weapons on highest-value target",
             secondary_focus_target=1,
             secondary_focus_label="Weapons on most reliable target",
+            exact_time_limit_seconds=exact_time_limit_seconds,
+            use_exact_warm_start=use_exact_warm_start,
         )
     )
 
@@ -424,17 +480,60 @@ def plot_sensitivity_analysis(df: pd.DataFrame) -> None:
         plt.close()
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run WTA optimization benchmarks and analyses.")
+    parser.add_argument(
+        "--mode",
+        choices=["files", "random", "warm", "sensitivity", "all"],
+        default="files",
+        help="Select which analysis to run. Default: files.",
+    )
+    parser.add_argument(
+        "--exact-limit-seconds",
+        type=float,
+        default=EXACT_TIME_LIMIT_SECONDS,
+        help="Time limit for each exact MIP solve in seconds.",
+    )
+    parser.add_argument(
+        "--no-exact-warm-start",
+        action="store_true",
+        help="Disable warm start from the greedy heuristic for exact benchmark solves.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    use_exact_warm_start = not args.no_exact_warm_start
+
+    if args.mode in {"files", "all"}:
+        df_results_from_files = run_benchmark(
+            from_file=True,
+            exact_time_limit_seconds=args.exact_limit_seconds,
+            use_exact_warm_start=use_exact_warm_start,
+        )
+        plot_results(df_results_from_files, from_file=True)
+        plot_tradeoff(df_results_from_files, from_file=True)
+
+    if args.mode in {"random", "all"}:
+        df_results = run_benchmark(
+            exact_time_limit_seconds=args.exact_limit_seconds,
+            use_exact_warm_start=use_exact_warm_start,
+        )
+        plot_results(df_results)
+        plot_tradeoff(df_results)
+
+    if args.mode in {"warm", "all"}:
+        warm_start_df = run_warm_start_study(exact_time_limit_seconds=args.exact_limit_seconds)
+        plot_warm_start_study(warm_start_df)
+
+    if args.mode in {"sensitivity", "all"}:
+        sensitivity_df = run_sensitivity_analysis(
+            exact_time_limit_seconds=args.exact_limit_seconds,
+            use_exact_warm_start=use_exact_warm_start,
+        )
+        plot_sensitivity_analysis(sensitivity_df)
+
+
 if __name__ == "__main__":
-    df_results_from_files = run_benchmark(from_file=True)
-    plot_results(df_results_from_files, from_file=True)
-    plot_tradeoff(df_results_from_files, from_file=True)
-
-    df_results = run_benchmark()
-    plot_results(df_results)
-    plot_tradeoff(df_results)
-
-    warm_start_df = run_warm_start_study()
-    plot_warm_start_study(warm_start_df)
-
-    sensitivity_df = run_sensitivity_analysis()
-    plot_sensitivity_analysis(sensitivity_df)
+    main()

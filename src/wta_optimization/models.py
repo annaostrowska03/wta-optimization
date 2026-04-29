@@ -32,6 +32,7 @@ class WTASolution:
     objective_value: float
     runtime_seconds: float = 0.0
     method: str = "unknown"
+    status: str = "unknown"
 
     @property
     def assigned_pairs(self) -> list[tuple[int, int]]:

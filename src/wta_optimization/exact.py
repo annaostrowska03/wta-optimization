@@ -96,6 +96,7 @@ def solve_exact(
         timeLimit=time_limit_seconds,
     )
     prob.solve(solver)
+    solver_status = pulp.LpStatus.get(prob.status, f"status_{prob.status}")
 
     assignment = [[0 for _ in range(instance.targets)] for _ in range(instance.weapons)]
     for i in range(instance.weapons):
@@ -111,4 +112,5 @@ def solve_exact(
         objective_value=objective_value(instance, frozen_assignment),
         runtime_seconds=runtime,
         method="exact_mip_pulp_linearized_warm_start" if warm_start_assignment is not None else "exact_mip_pulp_linearized",
+        status=solver_status,
     )

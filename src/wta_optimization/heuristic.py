@@ -36,6 +36,7 @@ def _build_solution(
         objective_value=objective if objective is not None else objective_value(instance, frozen_assignment),
         runtime_seconds=runtime_seconds,
         method=method,
+        status="heuristic",
     )
 
 

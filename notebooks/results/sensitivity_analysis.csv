@@ -1,0 +1,9 @@
+scenario,method,runtime_s,objective_value,optimality_gap_pct,primary_focus_label,primary_focus_allocations,secondary_focus_label,secondary_focus_allocations,allocation_profile
+High Value Target,Greedy,4.4899992644786835e-05,30.151809878483,55.31445235645573,Weapons on 100x target,3,,0,"3,1,1,1,0,0,1,1,1,1,1,1"
+High Value Target,Greedy + Local Search,0.008823999902233481,21.23857364285447,9.401639485866886,Weapons on 100x target,3,,0,"3,1,0,1,0,1,1,1,1,1,1,1"
+High Value Target,Simulated Annealing,0.04795959999319166,20.92445129714543,7.783569449827674,Weapons on 100x target,3,,0,"3,1,1,1,0,0,1,1,1,1,1,1"
+High Value Target,Exact MIP,1.1671296999556944,19.413396127028047,0.0,Weapons on 100x target,2,,0,"2,1,1,1,0,1,1,1,1,1,1,1"
+Reliability vs Quality,Greedy,1.6600009985268116e-05,7.686000000000002,17.630853994490373,Weapons on highest-value target,5,Weapons on most reliable target,1,"5,1,2"
+Reliability vs Quality,Greedy + Local Search,0.0001354999840259552,6.534000000000001,0.0,Weapons on highest-value target,5,Weapons on most reliable target,1,"5,1,2"
+Reliability vs Quality,Simulated Annealing,0.033443599939346313,6.534000000000001,0.0,Weapons on highest-value target,5,Weapons on most reliable target,1,"5,1,2"
+Reliability vs Quality,Exact MIP,0.15063359995838255,6.534000000000001,0.0,Weapons on highest-value target,5,Weapons on most reliable target,1,"5,1,2"

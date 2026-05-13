@@ -143,4 +143,4 @@ fabric.properties
 *.vsix
 
 # Project Specific
-#todo
+papers/

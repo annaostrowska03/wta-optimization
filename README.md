@@ -18,3 +18,7 @@ The Static WTA problem is a classic NP-hard combinatorial optimization challenge
 
 ---
 *Developed as a course project for Optimization in Data Analysis @ WUT.
+
+## Data
+
+The benchmark tests in this repository include experiments run using the dataset published on Mendeley Data: https://data.mendeley.com/datasets/jt2ppwr62p/2

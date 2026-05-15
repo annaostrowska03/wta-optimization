@@ -1,7 +1,7 @@
 """Static Weapon Target Allocation optimization tools."""
 
 from .data import generate_random_instance
-from .exact import solve_exact
+from .exact import solve_exact, solve_branch_and_adjust
 from .heuristic import solve_greedy, solve_local_search, solve_simulated_annealing
 from .models import WTASolution, WTAInstance
 
@@ -13,4 +13,7 @@ __all__ = [
     "solve_greedy",
     "solve_local_search",
     "solve_simulated_annealing",
+    "solve_exact",
+    "solve_branch_and_adjust",
+    "solve_greedy",
 ]

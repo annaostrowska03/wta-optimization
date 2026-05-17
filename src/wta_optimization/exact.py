@@ -4,9 +4,8 @@ import math
 from time import perf_counter
 from typing import Sequence
 
-import gurobipy as gp
-from gurobipy import GRB
 import pulp
+from pyscipopt import Model, Eventhdlr, SCIP_EVENTTYPE, quicksum
 
 from .models import WTAInstance, WTASolution, objective_value
 
@@ -39,7 +38,7 @@ def solve_exact(
 ) -> WTASolution:
     """
     Solve the Static WTA problem using an exact MILP formulation via pulp.
-    Uses log transformation mapping and piecewise linear approximation for the 
+    Uses log transformation mapping and piecewise linear approximation for the
     exponential objective reduction.
     """
     start = perf_counter()
@@ -48,7 +47,7 @@ def solve_exact(
     prob = pulp.LpProblem("Static_WTA_MIP", pulp.LpMinimize)
 
     # Decision variables
-    x = [[pulp.LpVariable(f"x_{i}_{j}", cat=pulp.LpBinary) 
+    x = [[pulp.LpVariable(f"x_{i}_{j}", cat=pulp.LpBinary)
           for j in range(instance.targets)] for i in range(instance.weapons)]
           
     z = [pulp.LpVariable(f"z_{j}", lowBound=0.0) for j in range(instance.targets)]
@@ -107,7 +106,7 @@ def solve_exact(
                 assignment[i][j] = 1
 
     frozen_assignment = tuple(tuple(row) for row in assignment)
-    
+
     runtime = perf_counter() - start
     return WTASolution(
         assignment=frozen_assignment,
@@ -118,46 +117,77 @@ def solve_exact(
     )
 
 
+class TrueObjectiveTracker(Eventhdlr):
+    """
+    SCIP Event Handler that tracks the true nonlinear objective
+    whenever a new integer-feasible solution is found in the tree.
+    """
+
+    def __init__(self, instance: WTAInstance, x_vars: list[list]):
+        self.instance = instance
+        self.x_vars = x_vars
+        self.best_true_obj = float('inf')
+        self.best_assignment = None
+
+    def eventinit(self):
+        self.model.catchEvent(SCIP_EVENTTYPE.BESTSOLFOUND, self)
+
+    def eventexit(self):
+        self.model.dropEvent(SCIP_EVENTTYPE.BESTSOLFOUND, self)
+
+    def eventexec(self, event):
+        sol = self.model.getBestSol()
+        if sol is None:
+            return
+
+        true_obj = 0.0
+        targets = self.instance.targets
+        weapons = self.instance.weapons
+        assignment = [[0 for _ in range(targets)] for _ in range(weapons)]
+
+        for j in range(targets):
+            surv = self.instance.target_values[j]
+            for i in range(weapons):
+                val = self.model.getSolVal(sol, self.x_vars[i][j])
+                if val > 0.5:
+                    surv *= (1.0 - self.instance.destruction_probabilities[i][j])
+                    assignment[i][j] = 1
+            true_obj += surv
+
+        if true_obj < self.best_true_obj:
+            self.best_true_obj = true_obj
+            self.best_assignment = tuple(tuple(row) for row in assignment)
+
+
 def solve_branch_and_adjust(
         instance: WTAInstance,
+        num_piecewise_segments: int = 20,
         warm_start: WTASolution | Sequence[Sequence[int]] | None = None,
         time_limit_seconds: float = 5400.0,
 ) -> WTASolution:
     """
-    Solve the Static WTA problem using the Branch-and-Adjust algorithm.
-    Utilizes Gurobi's native piecewise-linear exponential constraints and a callback
-    to track the true non-linear objective.
+    Solve the Static WTA problem using the Branch-and-Adjust algorithm via SCIP.
+    Utilizes PySCIPOpt, piecewise-linear convex under-approximation, and an Event
+    Handler to track the true non-linear objective.
     """
     start = perf_counter()
     warm_start_assignment = _normalize_warm_start(instance, warm_start)
 
-    env = gp.Env(empty=True)
-    env.setParam("OutputFlag", 0)
-    env.start()
-
-    model = gp.Model("WTA_Branch_and_Adjust", env=env)
-    model.setParam(GRB.Param.TimeLimit, time_limit_seconds)
-    model.setParam(GRB.Param.LazyConstraints, 1)
+    model = Model("WTA_Branch_and_Adjust_SCIP")
+    model.hideOutput(True)
+    model.setRealParam("limits/time", time_limit_seconds)
 
     weapons = instance.weapons
     targets = instance.targets
 
-    x = model.addVars(weapons, targets, vtype=GRB.BINARY, name="x")
-    y = model.addVars(targets, lb=-GRB.INFINITY, name="y")
-    z = model.addVars(targets, lb=0.0, name="z")
+    x = [[model.addVar(vtype="B", name=f"x_{i}_{j}") for j in range(targets)] for i in range(weapons)]
+    y = [model.addVar(vtype="C", lb=None, name=f"y_{j}") for j in range(targets)]
+    z = [model.addVar(vtype="C", lb=0.0, name=f"z_{j}") for j in range(targets)]
 
-    if warm_start_assignment is not None:
-        for i in range(weapons):
-            for j in range(targets):
-                x[i, j].Start = warm_start_assignment[i][j]
-
-    model.setObjective(
-        gp.quicksum(instance.target_values[j] * z[j] for j in range(targets)),
-        GRB.MINIMIZE
-    )
+    model.setObjective(quicksum(instance.target_values[j] * z[j] for j in range(targets)), "minimize")
 
     for i in range(weapons):
-        model.addConstr(gp.quicksum(x[i, j] for j in range(targets)) <= 1, name=f"w_{i}")
+        model.addCons(quicksum(x[i][j] for j in range(targets)) <= 1, name=f"w_{i}")
 
     EPSILON = 1e-9
 
@@ -167,52 +197,43 @@ def solve_branch_and_adjust(
             q_ij = 1.0 - instance.destruction_probabilities[i][j]
             ln_q.append(math.log(max(q_ij, EPSILON)))
 
-        model.addConstr(
-            y[j] == gp.quicksum(x[i, j] * ln_q[i] for i in range(weapons)),
-            name=f"y_def_{j}"
-        )
+        model.addCons(y[j] == quicksum(x[i][j] * ln_q[i] for i in range(weapons)), name=f"y_def_{j}")
 
-        model.addGenConstrExp(y[j], z[j], name=f"exp_{j}")
+        min_y_j = sum(val for val in ln_q if val < 0)
 
-    model._best_true_obj = float('inf')
-    model._best_assignment = None
+        if min_y_j < 0:
+            step = abs(min_y_j) / max(1, num_piecewise_segments - 1)
+            for k in range(num_piecewise_segments):
+                pk = min_y_j + k * step
+                exp_pk = math.exp(pk)
+                model.addCons(z[j] >= exp_pk + exp_pk * (y[j] - pk))
+        else:
+            model.addCons(z[j] >= 1.0)
 
-    def branch_and_adjust_callback(cb_model, where):
-        if where == GRB.Callback.MIPSOL:
-            x_vals = cb_model.cbGetSolution(x)
+    if warm_start_assignment is not None:
+        sol = model.createSol()
+        for i in range(weapons):
+            for j in range(targets):
+                model.setSolVal(sol, x[i][j], warm_start_assignment[i][j])
+        model.addSol(sol)
 
-            true_obj = 0.0
-            for tj in range(targets):
-                surv = instance.target_values[tj]
-                for wi in range(weapons):
-                    if x_vals[wi, tj] > 0.5:
-                        surv *= (1.0 - instance.destruction_probabilities[wi][tj])
-                true_obj += surv
+    tracker = TrueObjectiveTracker(instance, x)
+    model.includeEventhdlr(tracker, "TrueObjTracker", "Tracks true objective on new best solutions")
 
-            if true_obj < cb_model._best_true_obj:
-                cb_model._best_true_obj = true_obj
-                assignment_matrix = [[0 for _ in range(targets)] for _ in range(weapons)]
-                for wi in range(weapons):
-                    for tj in range(targets):
-                        if x_vals[wi, tj] > 0.5:
-                            assignment_matrix[wi][tj] = 1
-                cb_model._best_assignment = tuple(tuple(row) for row in assignment_matrix)
-
-
-    model.optimize(branch_and_adjust_callback)
+    model.optimize()
 
     runtime = perf_counter() - start
 
-    if model.Status == GRB.OPTIMAL:
-        status_str = "optimal"
-    elif model.Status == GRB.TIME_LIMIT:
-        status_str = "time_limit"
-    else:
-        status_str = f"status_{model.Status}"
+    scip_status = model.getStatus()
+    status_map = {
+        "optimal": "optimal",
+        "timelimit": "time_limit",
+    }
+    status_str = status_map.get(scip_status, f"status_{scip_status}")
 
-    if model._best_assignment is not None:
-        final_assignment = model._best_assignment
-        final_obj = model._best_true_obj
+    if tracker.best_assignment is not None:
+        final_assignment = tracker.best_assignment
+        final_obj = tracker.best_true_obj
     else:
         final_assignment = tuple(tuple(0 for _ in range(targets)) for _ in range(weapons))
         final_obj = float('inf')
@@ -221,6 +242,6 @@ def solve_branch_and_adjust(
         assignment=final_assignment,
         objective_value=final_obj,
         runtime_seconds=runtime,
-        method="branch_and_adjust_gurobi",
+        method="branch_and_adjust_scip",
         status=status_str,
     )

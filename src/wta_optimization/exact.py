@@ -245,3 +245,179 @@ def solve_branch_and_adjust(
         method="branch_and_adjust_scip",
         status=status_str,
     )
+
+
+def solve_outer_approximation(
+        instance: WTAInstance,
+        warm_start: WTASolution | Sequence[Sequence[int]] | None = None,
+        time_limit_seconds: float = 5400.0,
+        verbose: bool = False,
+) -> WTASolution:
+    """
+    Solve the Static WTA problem using the iterative outer approximation
+    (cutting plane / Kelley) method.
+
+    Since the objective sum(V_j * exp(y_j)) is convex in y_j, tangent
+    hyperplanes are globally valid cutting planes.  The algorithm works as
+    follows:
+
+      1. Initialise with two tangent cuts per target (at y=0 and at min_y_j).
+      2. Solve the MIP with the current set of cuts.
+      3. At the resulting integer solution x*, compute y*_j exactly and check
+         whether the linearised z*_j >= exp(y*_j) is satisfied.
+      4. If violated: add a new tangent cut at y*_j and go to step 2.
+      5. If no violation: the LP objective = true objective => optimal.
+
+    Based on: Andersen, Pavlikov & Toffolo, "Weapon-target assignment problem:
+    Exact and approximate solution algorithms", Ann. Oper. Res. (2022).
+    """
+    start = perf_counter()
+    warm_start_assignment = _normalize_warm_start(instance, warm_start)
+
+    EPSILON = 1e-9
+    # CONV_TOL controls when a tangent cut is considered violated (and therefore
+    # added to the model).  A cut for target j is added only when the current
+    # linearised value z*_j is strictly less than exp(y*_j) by more than this
+    # threshold.  Larger values converge faster but may stop before the true
+    # optimum; smaller values tighten the outer approximation at the cost of
+    # more iterations.  1e-6 is well within floating-point precision and gives
+    # a certified optimality gap of effectively zero.
+    CONV_TOL = 1e-6
+
+    weapons = instance.weapons
+    targets = instance.targets
+
+    # Pre-compute ln(q_ij) = ln(1 - p_ij)
+    ln_q: list[list[float]] = [
+        [math.log(max(1.0 - instance.destruction_probabilities[i][j], EPSILON))
+         for j in range(targets)]
+        for i in range(weapons)
+    ]
+    # Lower bound on y_j: all weapons assigned to target j
+    min_y: list[float] = [
+        sum(ln_q[i][j] for i in range(weapons)) for j in range(targets)
+    ]
+
+    # Initial tangent points: y=0 (exp-max) and min_y_j (exp-min)
+    tangent_points: dict[int, list[float]] = {
+        j: ([0.0, min_y[j]] if min_y[j] < -1e-9 else [0.0])
+        for j in range(targets)
+    }
+
+    best_assignment: tuple[tuple[int, ...], ...] | None = warm_start_assignment
+    converged = False
+
+    if verbose:
+        total_cuts = sum(len(v) for v in tangent_points.values())
+        print(f"OA init: {instance.weapons}W x {instance.targets}T | initial cuts: {total_cuts}")
+        print(f"{'Iter':>4} | {'Cuts':>5} | {'Lin.Obj':>12} | {'True Obj':>12} | {'New cuts':>8}")
+
+    for _iteration in range(300):
+        remaining = time_limit_seconds - (perf_counter() - start)
+        if remaining <= 0:
+            break
+
+        # build SCIP model with current tangent cuts 
+        model = Model("WTA_OA")
+        model.hideOutput(True)
+        model.setRealParam("limits/time", remaining)
+
+        x = [
+            [model.addVar(vtype="B", name=f"x_{i}_{j}") for j in range(targets)]
+            for i in range(weapons)
+        ]
+        y = [
+            model.addVar(vtype="C", lb=min_y[j], ub=0.0, name=f"y_{j}")
+            for j in range(targets)
+        ]
+        z = [
+            model.addVar(vtype="C", lb=0.0, name=f"z_{j}")
+            for j in range(targets)
+        ]
+
+        model.setObjective(
+            quicksum(instance.target_values[j] * z[j] for j in range(targets)),
+            "minimize",
+        )
+
+        for i in range(weapons):
+            model.addCons(quicksum(x[i][j] for j in range(targets)) <= 1, name=f"w_{i}")
+
+        for j in range(targets):
+            model.addCons(
+                y[j] == quicksum(x[i][j] * ln_q[i][j] for i in range(weapons)),
+                name=f"y_{j}",
+            )
+            for y_bar in tangent_points[j]:
+                exp_ybar = math.exp(y_bar)
+                model.addCons(z[j] >= exp_ybar + exp_ybar * (y[j] - y_bar))
+
+        # Warm start from previous best assignment
+        if best_assignment is not None:
+            init_sol = model.createSol()
+            for i in range(weapons):
+                for j in range(targets):
+                    model.setSolVal(init_sol, x[i][j], best_assignment[i][j])
+            model.addSol(init_sol)
+
+        model.optimize()
+
+        best_scip_sol = model.getBestSol()
+        if best_scip_sol is None:
+            break
+
+        # Extract integer assignment from SCIP solution
+        assignment_list = [[0] * targets for _ in range(weapons)]
+        for i in range(weapons):
+            for j in range(targets):
+                if model.getSolVal(best_scip_sol, x[i][j]) > 0.5:
+                    assignment_list[i][j] = 1
+        frozen = tuple(tuple(row) for row in assignment_list)
+
+        # Update best by true objective
+        true_obj = objective_value(instance, frozen)
+        if best_assignment is None or true_obj < objective_value(instance, best_assignment):
+            best_assignment = frozen
+
+        # check for violated cuts at this integer solution 
+        # y*_j is uniquely determined by the binary assignment
+        any_violation = False
+        new_cuts_this_iter = 0
+        lin_obj = sum(
+            instance.target_values[j] * model.getSolVal(best_scip_sol, z[j])
+            for j in range(targets)
+        )
+        for j in range(targets):
+            y_star = sum(frozen[i][j] * ln_q[i][j] for i in range(weapons))
+            z_star = model.getSolVal(best_scip_sol, z[j])
+            exp_y_star = math.exp(y_star)
+
+            if z_star < exp_y_star - CONV_TOL:
+                # Add tangent cut at y_star
+                if all(abs(y_star - tp) > 1e-10 for tp in tangent_points[j]):
+                    tangent_points[j].append(y_star)
+                    any_violation = True
+                    new_cuts_this_iter += 1
+
+        if verbose:
+            total_cuts = sum(len(v) for v in tangent_points.values())
+            print(f"{_iteration+1:>4} | {total_cuts:>5} | {lin_obj:>12.6f} | {true_obj:>12.6f} | {new_cuts_this_iter:>8}")
+
+        if not any_violation:
+            converged = True
+            if verbose:
+                print(f"Converged after {_iteration+1} iteration(s). Status: optimal.")
+            break
+
+    runtime = perf_counter() - start
+
+    if best_assignment is None:
+        best_assignment = tuple(tuple(0 for _ in range(targets)) for _ in range(weapons))
+
+    return WTASolution(
+        assignment=best_assignment,
+        objective_value=objective_value(instance, best_assignment),
+        runtime_seconds=runtime,
+        method="outer_approximation_scip",
+        status="optimal" if converged else "time_limit",
+    )

@@ -623,6 +623,18 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable warm start from the greedy heuristic for exact benchmark solves.",
     )
+    parser.add_argument(
+        "--bertsimas-sizes",
+        type=str,
+        default=None,
+        help="Comma-separated list of sizes for Bertsimas benchmark (e.g. 5,10,20,50,100). Overrides default.",
+    )
+    parser.add_argument(
+        "--bertsimas-seeds",
+        type=str,
+        default=None,
+        help="Comma-separated list of seeds for Bertsimas benchmark (e.g. 42,43,44). Overrides default.",
+    )
     return parser.parse_args()
 
 
@@ -659,7 +671,19 @@ def main() -> None:
         plot_sensitivity_analysis(sensitivity_df)
 
     if args.mode in {"bertsimas"}:
+        bertsimas_sizes = (
+            [int(s) for s in args.bertsimas_sizes.split(",")]
+            if args.bertsimas_sizes
+            else None
+        )
+        bertsimas_seeds = (
+            [int(s) for s in args.bertsimas_seeds.split(",")]
+            if args.bertsimas_seeds
+            else None
+        )
         bertsimas_df = run_bertsimas_benchmark(
+            sizes=bertsimas_sizes,
+            seeds=bertsimas_seeds,
             exact_time_limit_seconds=args.exact_limit_seconds,
             use_exact_warm_start=use_exact_warm_start,
         )

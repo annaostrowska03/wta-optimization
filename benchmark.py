@@ -7,7 +7,7 @@ import pandas as pd
 import seaborn as sns
 
 from wta_optimization.data import generate_random_instance, load_instance_from_file
-from wta_optimization.exact import solve_exact, solve_branch_and_adjust
+from wta_optimization.exact import solve_exact, solve_branch_and_adjust, solve_outer_approximation
 from wta_optimization.heuristic import (
     solve_greedy,
     solve_local_search,
@@ -22,6 +22,7 @@ METHOD_SPECS = [
     ("sa", "Simulated Annealing", "tab:green"),
     ("exact", "Exact MIP (PuLP)", "black"),
     ("bna", "Branch & Adjust (SCIP)", "tab:red"),
+    ("oa", "Outer Approximation (SCIP)", "tab:purple"),
 ]
 
 EXACT_TIME_LIMIT_SECONDS = 5400.0
@@ -54,12 +55,19 @@ def _evaluate_methods(
         time_limit_seconds=exact_time_limit_seconds,
     )
 
+    sol_oa = solve_outer_approximation(
+        instance,
+        warm_start=sol_greedy if use_exact_warm_start else None,
+        time_limit_seconds=exact_time_limit_seconds,
+    )
+
     return {
         "greedy": sol_greedy,
         "ls": sol_ls,
         "sa": sol_sa,
         "exact": sol_exact,
         "bna": sol_bna,
+        "oa": sol_oa,
     }
 
 
@@ -489,11 +497,118 @@ def plot_sensitivity_analysis(df: pd.DataFrame) -> None:
         plt.close()
 
 
+def run_bertsimas_benchmark(
+    sizes: list[int] | None = None,
+    seeds: list[int] | None = None,
+    exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
+    use_exact_warm_start: bool = True,
+) -> pd.DataFrame:
+    """Run benchmark on instances generated following Bertsimas & Paskov (2025) schemes.
+
+    Scheme 1 (hard): P_ij ~ Uniform(0, 1), v_j ~ Uniform integer [1, 100]
+    Scheme 2:        P_ij ~ Uniform(0.6, 0.9), v_j ~ Uniform integer [25, 100]
+    """
+    sizes = sizes or [5, 10, 15, 20, 25, 30]
+    seeds = seeds or [42, 43, 44]
+
+    schemes = [
+        ("scheme1", (0.0, 1.0), (1.0, 100.0)),
+        ("scheme2", (0.6, 0.9), (25.0, 100.0)),
+    ]
+
+    results = []
+
+    print("Starting WTA Benchmark on Bertsimas & Paskov (2025) Instance Schemes...")
+    print(f"Exact MIP time limit per instance: {exact_time_limit_seconds:.0f}s")
+    print(f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
+    print(
+        f"{'Scheme':<10} | {'Size':<5} | {'Seed':<4} | {'Exact T':<10} | "
+        f"{'Gr T':<8} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8} | {'BnA Gap%':<9} | {'OA Gap%':<8} | Status"
+    )
+
+    for scheme_name, prob_range, val_range in schemes:
+        for size in sizes:
+            for seed in seeds:
+                instance = generate_random_instance(
+                    weapons=size,
+                    targets=size,
+                    seed=seed,
+                    target_value_range=val_range,
+                    destruction_probability_range=prob_range,
+                )
+                try:
+                    solutions = _evaluate_methods(
+                        instance,
+                        exact_time_limit_seconds=exact_time_limit_seconds,
+                        use_exact_warm_start=use_exact_warm_start,
+                    )
+                    row = _build_result_row({"scheme": scheme_name, "size": size, "seed": seed}, solutions)
+                    results.append(row)
+
+                    print(
+                        f"{scheme_name:<10} | {size:<5} | {seed:<4} | "
+                        f"{row['exact_time_s']:<10.4f} | {row['greedy_time_s']:<8.4f} | "
+                        f"{row['optimality_gap_pct_greedy']:<8.2f} | {row['optimality_gap_pct_ls']:<8.2f} | "
+                        f"{row['optimality_gap_pct_sa']:<8.2f} | {row['optimality_gap_pct_bna']:<9.2f} | "
+                        f"{row['optimality_gap_pct_oa']:<8.2f} | {row['exact_status']}"
+                    )
+                except Exception as exc:
+                    print(f"{scheme_name:<10} | {size:<5} | {seed:<4} | ERROR: {exc}")
+                    results.append({"scheme": scheme_name, "size": size, "seed": seed, "error": str(exc)})
+
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    df = pd.DataFrame(results)
+    csv_path = output_dir / "benchmark_bertsimas.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"\nResults saved to: {csv_path}")
+    return df
+
+
+def plot_bertsimas_benchmark(df: pd.DataFrame) -> None:
+    sns.set_theme(style="whitegrid")
+    output_dir = Path("results")
+
+    for scheme in df["scheme"].unique():
+        scheme_df = df[df["scheme"] == scheme]
+        agg_df = (
+            scheme_df.groupby("size", as_index=False)
+            .agg({col: "mean" for col in scheme_df.columns if col not in ("scheme", "size", "seed") and pd.api.types.is_numeric_dtype(scheme_df[col])})
+        )
+
+        plt.figure(figsize=(11, 6))
+        for method_key, label, _ in METHOD_SPECS:
+            plt.plot(agg_df["size"], agg_df[f"{method_key}_time_s"], marker="o", label=label)
+        plt.yscale("log")
+        plt.title(f"Execution Time — Bertsimas {scheme}")
+        plt.xlabel("Problem Size (N weapons = N targets)")
+        plt.ylabel("Time (seconds)")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(output_dir / f"bertsimas_{scheme}_time.png", dpi=300)
+        plt.close()
+
+        plt.figure(figsize=(11, 6))
+        for method_key, label, color in METHOD_SPECS:
+            if method_key == "exact":
+                continue
+            plt.plot(agg_df["size"], agg_df[f"optimality_gap_pct_{method_key}"], marker="o", color=color, label=f"{label} Gap %")
+        plt.title(f"Optimality Gap — Bertsimas {scheme}")
+        plt.xlabel("Problem Size (N weapons = N targets)")
+        plt.ylabel("Optimality Gap (%)")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(output_dir / f"bertsimas_{scheme}_gap.png", dpi=300)
+        plt.close()
+
+    print(f"Bertsimas benchmark plots saved to {output_dir}/")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run WTA optimization benchmarks and analyses.")
     parser.add_argument(
         "--mode",
-        choices=["files", "random", "warm", "sensitivity", "all"],
+        choices=["files", "random", "warm", "sensitivity", "bertsimas", "all"],
         default="files",
         help="Select which analysis to run. Default: files.",
     )
@@ -542,6 +657,13 @@ def main() -> None:
             use_exact_warm_start=use_exact_warm_start,
         )
         plot_sensitivity_analysis(sensitivity_df)
+
+    if args.mode in {"bertsimas"}:
+        bertsimas_df = run_bertsimas_benchmark(
+            exact_time_limit_seconds=args.exact_limit_seconds,
+            use_exact_warm_start=use_exact_warm_start,
+        )
+        plot_bertsimas_benchmark(bertsimas_df)
 
 
 if __name__ == "__main__":

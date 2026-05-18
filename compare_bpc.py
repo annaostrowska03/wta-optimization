@@ -11,8 +11,10 @@ For N×N square instances (targets = weapons) from the Andersen benchmark:
   N=350 → BPC 0.167 s     N=400 → BPC 0.232 s
   N=450 → BPC 0.290 s
 
-Our benchmark ran on the Bertsimas Scheme 2 instances across a range of N.
-Instances where our methods hit the time limit are marked with open markers.
+Data source priority:
+  1. benchmark_results_from_files.csv  — Andersen's actual wta*.txt instances
+     (SAME instances as used by BPC/BA in Table 1 of the paper)
+  2. benchmark_bertsimas.csv  — random Scheme-2 instances (fallback)
 
 Usage:
     python compare_bpc.py
@@ -32,36 +34,47 @@ from pathlib import Path
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(exist_ok=True)
 
-# 1.  Our benchmark results from Bertsimas instances 
-df = pd.read_csv(RESULTS_DIR / "benchmark_bertsimas.csv")
-df2 = df[df["scheme"] == "scheme2"].copy()
+# --------------------------------------------------------------------------
+# 1.  Load our benchmark results — prefer file-based (same instances as paper)
+# --------------------------------------------------------------------------
+files_csv = RESULTS_DIR / "benchmark_results_from_files.csv"
+bertsimas_csv = RESULTS_DIR / "benchmark_bertsimas.csv"
+
+use_file_instances = False
+if files_csv.exists():
+    fdf = pd.read_csv(files_csv)
+    if "oa_time_s" in fdf.columns and "bna_time_s" in fdf.columns:
+        # Extract numeric N from filename (wta50.txt → 50)
+        fdf["size"] = fdf["file"].str.extract(r"(\d+)").astype(int)
+        # Keep only rows without errors
+        fdf = fdf[fdf["error"].isna()] if "error" in fdf.columns else fdf
+        if not fdf.empty:
+            ours = fdf[["size", "oa_time_s", "bna_time_s", "exact_time_s",
+                        "oa_status", "bna_status", "exact_status"]].copy()
+            use_file_instances = True
+            print("Using Andersen wta*.txt file instances (same data as paper Table 1).")
+
+if not use_file_instances:
+    df = pd.read_csv(bertsimas_csv)
+    df2 = df[df["scheme"] == "scheme2"].copy()
+    agg_cols = {col: "mean" for col in df2.columns
+                if col not in ("scheme", "size", "seed")
+                and pd.api.types.is_numeric_dtype(df2[col])}
+    ours = df2.groupby("size", as_index=False).agg(agg_cols)
+    print("Using random Bertsimas Scheme-2 instances (file benchmark not yet run).")
 
 # Identify rows that reached the time limit for each method
 for method in ("oa", "bna", "exact"):
     status_col = f"{method}_status"
-    if status_col in df2.columns:
-        df2[f"{method}_timed_out"] = ~df2[status_col].str.lower().str.contains("optimal", na=False)
+    if status_col in ours.columns:
+        ours[f"{method}_timed_out"] = ~ours[status_col].str.lower().str.contains("optimal", na=False)
+    else:
+        ours[f"{method}_timed_out"] = False
 
-# Aggregate per size: mean time
-agg_cols = {col: "mean" for col in df2.columns
-            if col not in ("scheme", "size", "seed")
-            and pd.api.types.is_numeric_dtype(df2[col])}
-ours = df2.groupby("size", as_index=False).agg(agg_cols)
-
-# Add "any timed out" flag per size for each method
-for method in ("oa", "bna", "exact"):
-    timed_col = f"{method}_timed_out"
-    if timed_col in df2.columns:
-        timeout_by_size = df2.groupby("size")[timed_col].any()
-        ours[f"{method}_any_timeout"] = ours["size"].map(timeout_by_size)
-
-def split_optimal_timeout(ours_df, method):
-    time_col = f"{method}_time_s"
-    to_col = f"{method}_any_timeout"
-    if to_col not in ours_df.columns:
-        return ours_df, pd.DataFrame()
-    opt = ours_df[~ours_df[to_col].fillna(False)]
-    tmo = ours_df[ours_df[to_col].fillna(False)]
+def split_optimal_timeout(df, method):
+    to_col = f"{method}_timed_out"
+    opt = df[~df[to_col].fillna(False)]
+    tmo = df[df[to_col].fillna(False)]
     return opt, tmo
 
 oa_opt,  oa_tmo  = split_optimal_timeout(ours, "oa")
@@ -86,19 +99,24 @@ ba_andersen = pd.DataFrame({
 # --------------------------------------------------------------------------
 export = pd.merge(bpc_data, ba_andersen, on="size", how="outer")
 combined = pd.concat(
-    [ours[["size", "oa_time_s", "bna_time_s", "exact_time_s"]].rename(columns={"size": "n"}),
-     export.assign(oa_time_s=np.nan, bna_time_s=np.nan, exact_time_s=np.nan).rename(columns={"size": "n"})],
+    [ours[["size", "oa_time_s", "bna_time_s", "exact_time_s"]].assign(bpc_time=np.nan, ba_time=np.nan),
+     export.assign(oa_time_s=np.nan, bna_time_s=np.nan, exact_time_s=np.nan)],
     ignore_index=True,
-)
+).sort_values("size")
 combined.to_csv(RESULTS_DIR / "comparison_bpc_vs_oa.csv", index=False)
 print(f"Saved → {RESULTS_DIR / 'comparison_bpc_vs_oa.csv'}")
-print("\nOur methods (Scheme 2, mean over seeds):")
+
+label = "Andersen wta files" if use_file_instances else "Scheme-2 random (mean)"
+print(f"\nOur methods ({label}):")
 print(ours[["size", "oa_time_s", "bna_time_s", "exact_time_s"]].to_string(index=False))
+
+print(f"\nBPC (Bertsimas) vs BA (Andersen) — large instances:")
+print(pd.merge(bpc_data, ba_andersen, on="size", how="outer").to_string(index=False))
 
 # --------------------------------------------------------------------------
 # 4.  Plot
 # --------------------------------------------------------------------------
-fig, ax = plt.subplots(figsize=(11, 6.5))
+fig, ax = plt.subplots(figsize=(12, 7))
 
 # — OA: optimal (solid) and timeout (open marker)
 if not oa_opt.empty:
@@ -136,12 +154,12 @@ ax.plot(ba_andersen["size"], ba_andersen["ba_time"],
 for _, row in bpc_data.iterrows():
     ax.annotate(f"{row['bpc_time']:.3f}s",
                 xy=(row["size"], row["bpc_time"]),
-                xytext=(10, -14), textcoords="offset points",
+                xytext=(8, -14), textcoords="offset points",
                 color="tab:green", fontsize=8)
 
 # Time limit reference line (if any timeouts in our data)
-if "oa_any_timeout" in ours.columns and ours["oa_any_timeout"].any():
-    tl = df2["oa_time_s"].max()
+if ours["oa_timed_out"].any() or ours["bna_timed_out"].any():
+    tl = ours[["oa_time_s", "bna_time_s"]].max().max()
     ax.axhline(y=tl, color="gray", linestyle=":", alpha=0.5, linewidth=1)
     ax.text(ours["size"].min() + 1, tl * 1.05, f"our time limit ≈ {tl:.0f}s",
             color="gray", fontsize=8, alpha=0.8)
@@ -150,10 +168,10 @@ ax.set_yscale("log")
 ax.set_xlabel("Problem size  N  (weapons = targets)", fontsize=12)
 ax.set_ylabel("Solve time (seconds, log scale)", fontsize=12)
 
+data_label = "Andersen wta*.txt — same instances as paper" if use_file_instances else "random Scheme-2"
 n_our = f"{ours['size'].min()}–{ours['size'].max()}"
 ax.set_title(
-    f"Solve Time: Our Methods (N={n_our}) vs Bertsimas & Paskov (2025) BPC (N=200–450)\n"
-    "Open markers = time limit reached (solution may not be optimal)",
+    f"Solve Time: Our Methods (N={n_our}, {data_label})\nvs Bertsimas & Paskov (2025) BPC (N=200–450)",
     fontsize=11,
 )
 ax.legend(fontsize=9, loc="upper left")
@@ -169,4 +187,3 @@ fig.tight_layout()
 out_path = RESULTS_DIR / "comparison_bpc_vs_oa.png"
 fig.savefig(out_path, dpi=150)
 print(f"Saved → {out_path}")
-plt.show()

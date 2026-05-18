@@ -177,36 +177,65 @@ def run_benchmark(
         dir_path = Path(dir_path)
         files = sorted(dir_path.glob("*.txt"), key=_numeric_file_sort_key)
 
+        output_dir = Path("results")
+        output_dir.mkdir(exist_ok=True)
+        csv_path = output_dir / "benchmark_results_from_files.csv"
+
+        # Load existing results so we can resume without re-running completed files.
+        # Only resume if the CSV already contains OA/BnA columns (otherwise it's an
+        # old file from before those methods were added and we must re-run everything).
+        if csv_path.exists():
+            existing_df = pd.read_csv(csv_path)
+            if "oa_time_s" in existing_df.columns and "bna_time_s" in existing_df.columns:
+                results = existing_df.to_dict("records")
+                done_files = {r["file"] for r in results if "error" not in r or pd.isna(r.get("error"))}
+                print(f"Resuming — {len(done_files)} existing rows loaded from {csv_path}")
+            else:
+                print(f"Old CSV found (no OA/BnA columns) — re-running all files.")
+                results = []
+                done_files: set[str] = set()
+        else:
+            results = []
+            done_files: set[str] = set()
+
         print("Starting WTA Optimization Benchmark (From Files)...")
-        print(f"Exact MIP time limit per instance: {exact_time_limit_seconds / 3600:.1f} h")
-        print(f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
+        print(f"Time limit per instance: {exact_time_limit_seconds:.0f}s")
+        print(f"Warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
         print(
-            f"{'File':<20} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | "
-            f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8} | {'Exact Status':<12}"
+            f"{'File':<12} | {'BnA T':<8} | {'OA T':<8} | {'Exact T':<8} | "
+            f"{'BnA Gap%':<9} | {'OA Gap%':<8} | {'Gr Gap%':<8} | Status"
         )
 
         for index, file in enumerate(files, start=1):
-            print(f"Processing [{index}/{len(files)}]: {file.name}")
+            if file.name in done_files:
+                print(f"{file.name:<12} | (skipped — already done)")
+                continue
+
+            print(f"[{index}/{len(files)}] {file.name} ...", end="", flush=True)
             instance = load_instance_from_file(file)
-            solutions = _evaluate_methods(
-                instance,
-                exact_time_limit_seconds=exact_time_limit_seconds,
-                use_exact_warm_start=use_exact_warm_start,
-            )
-            row = _build_result_row({"file": file.name}, solutions)
-            results.append(row)
+            try:
+                solutions = _evaluate_methods(
+                    instance,
+                    exact_time_limit_seconds=exact_time_limit_seconds,
+                    use_exact_warm_start=use_exact_warm_start,
+                )
+                row = _build_result_row({"file": file.name}, solutions)
+                results.append(row)
 
-            print(
-                f"{file.name:<20} | {row['exact_time_s']:<10.4f} | {row['greedy_time_s']:<10.4f} | "
-                f"{row['ls_time_s']:<10.4f} | {row['sa_time_s']:<10.4f} | "
-                f"{row['optimality_gap_pct_greedy']:<8.2f} | {row['optimality_gap_pct_ls']:<8.2f} | "
-                f"{row['optimality_gap_pct_sa']:<8.2f} | {row['exact_status']:<12}"
-            )
+                print(
+                    f"\r{file.name:<12} | {row['bna_time_s']:<8.2f} | {row['oa_time_s']:<8.2f} | "
+                    f"{row['exact_time_s']:<8.2f} | {row['optimality_gap_pct_bna']:<9.2f} | "
+                    f"{row['optimality_gap_pct_oa']:<8.2f} | {row['optimality_gap_pct_greedy']:<8.2f} | "
+                    f"{row['exact_status']}"
+                )
+            except Exception as exc:
+                print(f"\r{file.name:<12} | ERROR: {exc}")
+                results.append({"file": file.name, "error": str(exc)})
 
-        output_dir = Path("results")
-        output_dir.mkdir(exist_ok=True)
+            # Save after every file so crashes don't lose data
+            pd.DataFrame(results).to_csv(csv_path, index=False)
+
         df = pd.DataFrame(results)
-        csv_path = output_dir / "benchmark_results_from_files.csv"
         df.to_csv(csv_path, index=False)
         print(f"\nResults saved to: {csv_path}")
         return df
@@ -500,6 +529,7 @@ def plot_sensitivity_analysis(df: pd.DataFrame) -> None:
 def run_bertsimas_benchmark(
     sizes: list[int] | None = None,
     seeds: list[int] | None = None,
+    schemes_to_run: list[str] | None = None,
     exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
     use_exact_warm_start: bool = True,
 ) -> pd.DataFrame:
@@ -511,10 +541,12 @@ def run_bertsimas_benchmark(
     sizes = sizes or [5, 10, 15, 20, 25, 30]
     seeds = seeds or [42, 43, 44]
 
-    schemes = [
+    all_schemes = [
         ("scheme1", (0.0, 1.0), (1.0, 100.0)),
         ("scheme2", (0.6, 0.9), (25.0, 100.0)),
     ]
+    schemes = [(n, p, v) for n, p, v in all_schemes
+               if schemes_to_run is None or n in schemes_to_run]
 
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
@@ -652,6 +684,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Comma-separated list of seeds for Bertsimas benchmark (e.g. 42,43,44). Overrides default.",
     )
+    parser.add_argument(
+        "--bertsimas-schemes",
+        type=str,
+        default=None,
+        help="Comma-separated list of schemes to run: scheme1,scheme2. Default: both.",
+    )
     return parser.parse_args()
 
 
@@ -698,9 +736,15 @@ def main() -> None:
             if args.bertsimas_seeds
             else None
         )
+        bertsimas_schemes = (
+            [s.strip() for s in args.bertsimas_schemes.split(",")]
+            if args.bertsimas_schemes
+            else None
+        )
         bertsimas_df = run_bertsimas_benchmark(
             sizes=bertsimas_sizes,
             seeds=bertsimas_seeds,
+            schemes_to_run=bertsimas_schemes,
             exact_time_limit_seconds=args.exact_limit_seconds,
             use_exact_warm_start=use_exact_warm_start,
         )

@@ -11,8 +11,8 @@ For N×N square instances (targets = weapons) from the Andersen benchmark:
   N=350 → BPC 0.167 s     N=400 → BPC 0.232 s
   N=450 → BPC 0.290 s
 
-Our benchmark ran on the Bertsimas Scheme 1/2 instances for N=5-30.
-This script overlays both datasets on a single log-scale chart.
+Our benchmark ran on the Bertsimas Scheme 2 instances across a range of N.
+Instances where our methods hit the time limit are marked with open markers.
 
 Usage:
     python compare_bpc.py
@@ -32,127 +32,138 @@ from pathlib import Path
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(exist_ok=True)
 
-# 1.  Our benchmark results from Bertsimas instances (N=5-30)
+# 1.  Our benchmark results from Bertsimas instances 
 df = pd.read_csv(RESULTS_DIR / "benchmark_bertsimas.csv")
-
-# Keep only Scheme 2 (closer to Andersen/BPC benchmark distribution)
 df2 = df[df["scheme"] == "scheme2"].copy()
 
-# Average across seeds per size
-ours = (
-    df2.groupby("size")
-    .agg(
-        oa_time=("oa_time_s", "mean"),
-        bna_time=("bna_time_s", "mean"),
-        exact_time=("exact_time_s", "mean"),
-    )
-    .reset_index()
-)
+# Identify rows that reached the time limit for each method
+for method in ("oa", "bna", "exact"):
+    status_col = f"{method}_status"
+    if status_col in df2.columns:
+        df2[f"{method}_timed_out"] = ~df2[status_col].str.lower().str.contains("optimal", na=False)
 
-# 2.  Bertsimas BPC Table 1 data (N×N square instances, Andersen benchmark)
+# Aggregate per size: mean time
+agg_cols = {col: "mean" for col in df2.columns
+            if col not in ("scheme", "size", "seed")
+            and pd.api.types.is_numeric_dtype(df2[col])}
+ours = df2.groupby("size", as_index=False).agg(agg_cols)
+
+# Add "any timed out" flag per size for each method
+for method in ("oa", "bna", "exact"):
+    timed_col = f"{method}_timed_out"
+    if timed_col in df2.columns:
+        timeout_by_size = df2.groupby("size")[timed_col].any()
+        ours[f"{method}_any_timeout"] = ours["size"].map(timeout_by_size)
+
+def split_optimal_timeout(ours_df, method):
+    time_col = f"{method}_time_s"
+    to_col = f"{method}_any_timeout"
+    if to_col not in ours_df.columns:
+        return ours_df, pd.DataFrame()
+    opt = ours_df[~ours_df[to_col].fillna(False)]
+    tmo = ours_df[ours_df[to_col].fillna(False)]
+    return opt, tmo
+
+oa_opt,  oa_tmo  = split_optimal_timeout(ours, "oa")
+bna_opt, bna_tmo = split_optimal_timeout(ours, "bna")
+
+# --------------------------------------------------------------------------
+# 2.  Bertsimas BPC Table 1 — N×N square instances (Andersen benchmark)
+# --------------------------------------------------------------------------
 bpc_data = pd.DataFrame({
     "size": [200, 250, 300, 350, 400, 450],
     "bpc_time": [0.058, 0.082, 0.124, 0.167, 0.232, 0.290],
 })
 
-# BnA in paper uses BA = Branch-and-Adjust; for Andersen instances:
-# BA 200: 419.9 s, 250: 541.1 s, 300: 1859.5 s, 350: 2414.4 s, 400: 1844.9 s
+# Branch-and-Adjust (Andersen 2022) on same instances
 ba_andersen = pd.DataFrame({
     "size": [200, 250, 300, 350, 400],
     "ba_time": [419.9, 541.1, 1859.5, 2414.4, 1844.9],
 })
 
+# --------------------------------------------------------------------------
+# 3.  Export CSV
+# --------------------------------------------------------------------------
 export = pd.merge(bpc_data, ba_andersen, on="size", how="outer")
-print("BPC (Bertsimas) vs BA (Andersen) — large instances:")
-print(export.to_string(index=False))
-print()
-print("Our methods — small instances (Scheme 2, mean over 3 seeds):")
-print(ours.to_string(index=False))
-
 combined = pd.concat(
-    [
-        ours.rename(columns={"size": "n"}),
-        export.assign(
-            oa_time=np.nan,
-            bna_time=np.nan,
-            exact_time=np.nan,
-        ).rename(columns={"size": "n"}),
-    ],
+    [ours[["size", "oa_time_s", "bna_time_s", "exact_time_s"]].rename(columns={"size": "n"}),
+     export.assign(oa_time_s=np.nan, bna_time_s=np.nan, exact_time_s=np.nan).rename(columns={"size": "n"})],
     ignore_index=True,
 )
 combined.to_csv(RESULTS_DIR / "comparison_bpc_vs_oa.csv", index=False)
-print(f"\nSaved → {RESULTS_DIR / 'comparison_bpc_vs_oa.csv'}")
+print(f"Saved → {RESULTS_DIR / 'comparison_bpc_vs_oa.csv'}")
+print("\nOur methods (Scheme 2, mean over seeds):")
+print(ours[["size", "oa_time_s", "bna_time_s", "exact_time_s"]].to_string(index=False))
 
-fig, ax = plt.subplots(figsize=(10, 6))
+# --------------------------------------------------------------------------
+# 4.  Plot
+# --------------------------------------------------------------------------
+fig, ax = plt.subplots(figsize=(11, 6.5))
 
-# Our methods (N = 5–30, left cluster)
-ax.plot(
-    ours["size"], ours["oa_time"],
-    "o-", color="tab:purple", linewidth=2, markersize=7,
-    label="Our OA — Outer Approximation (N=5–30)",
-)
-ax.plot(
-    ours["size"], ours["bna_time"],
-    "s--", color="tab:orange", linewidth=2, markersize=7,
-    label="Our BnA — Branch & Adjust (N=5–30)",
-)
-ax.plot(
-    ours["size"], ours["exact_time"],
-    "^:", color="tab:blue", linewidth=1.5, markersize=6,
-    label="Our Exact MIP — PuLP/CBC (N=5–30)",
-)
+# — OA: optimal (solid) and timeout (open marker)
+if not oa_opt.empty:
+    ax.plot(oa_opt["size"], oa_opt["oa_time_s"],
+            "o-", color="tab:purple", linewidth=2, markersize=7,
+            label="Our OA — optimal")
+if not oa_tmo.empty:
+    ax.plot(oa_tmo["size"], oa_tmo["oa_time_s"],
+            "o--", color="tab:purple", linewidth=1.5, markersize=7,
+            markerfacecolor="none", markeredgewidth=2,
+            label="Our OA — time limit reached")
 
-# BPC from Bertsimas 2025 (N = 200–450)
-ax.plot(
-    bpc_data["size"], bpc_data["bpc_time"],
-    "D-", color="tab:green", linewidth=2.5, markersize=9,
-    label="BPC — Bertsimas & Paskov (2025), N=200–450",
-)
+# — BnA: optimal (solid) and timeout (open marker)
+if not bna_opt.empty:
+    ax.plot(bna_opt["size"], bna_opt["bna_time_s"],
+            "s-", color="tab:orange", linewidth=2, markersize=7,
+            label="Our BnA — optimal")
+if not bna_tmo.empty:
+    ax.plot(bna_tmo["size"], bna_tmo["bna_time_s"],
+            "s--", color="tab:orange", linewidth=1.5, markersize=7,
+            markerfacecolor="none", markeredgewidth=2,
+            label="Our BnA — time limit reached")
 
-# BA from Andersen 2022 (N = 200–400, timeout = 7200 s marked separately)
-ba_no_timeout = ba_andersen[ba_andersen["ba_time"] < 7200]
-ax.plot(
-    ba_no_timeout["size"], ba_no_timeout["ba_time"],
-    "x--", color="tab:red", linewidth=1.5, markersize=9, markeredgewidth=2,
-    label="Branch-and-Adjust (Andersen 2022) — before timeout",
-)
+# — BPC (Bertsimas 2025)
+ax.plot(bpc_data["size"], bpc_data["bpc_time"],
+        "D-", color="tab:green", linewidth=2.5, markersize=9,
+        label="BPC — Bertsimas & Paskov (2025)")
 
-# Annotate BPC points with exact times
+# — BA Andersen 2022
+ax.plot(ba_andersen["size"], ba_andersen["ba_time"],
+        "x--", color="tab:red", linewidth=1.5, markersize=9, markeredgewidth=2,
+        label="Branch-and-Adjust (Andersen 2022)")
+
+# Annotate BPC points
 for _, row in bpc_data.iterrows():
-    ax.annotate(
-        f"{row['bpc_time']:.3f}s",
-        xy=(row["size"], row["bpc_time"]),
-        xytext=(12, -14),
-        textcoords="offset points",
-        color="tab:green",
-        fontsize=8,
-    )
+    ax.annotate(f"{row['bpc_time']:.3f}s",
+                xy=(row["size"], row["bpc_time"]),
+                xytext=(10, -14), textcoords="offset points",
+                color="tab:green", fontsize=8)
 
-# Timeout annotation for BA
-ax.axhline(y=7200, color="tab:red", linestyle=":", alpha=0.4, linewidth=1)
-ax.text(210, 7200 * 1.05, "BA timeout (2 h)", color="tab:red", fontsize=8, alpha=0.7)
+# Time limit reference line (if any timeouts in our data)
+if "oa_any_timeout" in ours.columns and ours["oa_any_timeout"].any():
+    tl = df2["oa_time_s"].max()
+    ax.axhline(y=tl, color="gray", linestyle=":", alpha=0.5, linewidth=1)
+    ax.text(ours["size"].min() + 1, tl * 1.05, f"our time limit ≈ {tl:.0f}s",
+            color="gray", fontsize=8, alpha=0.8)
 
 ax.set_yscale("log")
 ax.set_xlabel("Problem size  N  (weapons = targets)", fontsize=12)
 ax.set_ylabel("Solve time (seconds, log scale)", fontsize=12)
+
+n_our = f"{ours['size'].min()}–{ours['size'].max()}"
 ax.set_title(
-    "Solve Time Comparison: Outer Approximation / BnA / BPC\n"
-    "Our methods (N=5–30) vs Bertsimas & Paskov (2025) BPC (N=200–450)",
+    f"Solve Time: Our Methods (N={n_our}) vs Bertsimas & Paskov (2025) BPC (N=200–450)\n"
+    "Open markers = time limit reached (solution may not be optimal)",
     fontsize=11,
 )
 ax.legend(fontsize=9, loc="upper left")
 ax.grid(True, which="both", alpha=0.3)
 ax.yaxis.set_minor_formatter(mticker.NullFormatter())
 
-# Second x-axis note
-ax.text(
-    0.98, 0.05,
-    "Note: BPC uses Gurobi LP solver internally.\nOur methods use SCIP / PuLP/CBC (open-source).",
-    transform=ax.transAxes,
-    ha="right", va="bottom",
-    fontsize=8, color="gray",
-    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7),
-)
+ax.text(0.98, 0.04,
+        "Note: BPC uses Gurobi LP internally.\nOur methods use open-source SCIP / PuLP/CBC.",
+        transform=ax.transAxes, ha="right", va="bottom", fontsize=8, color="gray",
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7))
 
 fig.tight_layout()
 out_path = RESULTS_DIR / "comparison_bpc_vs_oa.png"

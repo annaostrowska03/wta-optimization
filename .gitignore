@@ -144,3 +144,7 @@ fabric.properties
 
 # Project Specific
 papers/
+data/
+*.mps
+*.mst
+*.sol

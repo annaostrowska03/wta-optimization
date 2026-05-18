@@ -516,7 +516,20 @@ def run_bertsimas_benchmark(
         ("scheme2", (0.6, 0.9), (25.0, 100.0)),
     ]
 
-    results = []
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    csv_path = output_dir / "benchmark_bertsimas.csv"
+
+    # Load existing results so we can resume and append without losing data
+    if csv_path.exists():
+        existing_df = pd.read_csv(csv_path)
+        results = existing_df.to_dict("records")
+        done = {(r["scheme"], int(r["size"]), int(r["seed"])) for r in results
+                if "error" not in r or pd.isna(r.get("error"))}
+        print(f"Resuming — {len(done)} existing rows loaded from {csv_path}")
+    else:
+        results = []
+        done: set[tuple[str, int, int]] = set()
 
     print("Starting WTA Benchmark on Bertsimas & Paskov (2025) Instance Schemes...")
     print(f"Exact MIP time limit per instance: {exact_time_limit_seconds:.0f}s")
@@ -529,6 +542,10 @@ def run_bertsimas_benchmark(
     for scheme_name, prob_range, val_range in schemes:
         for size in sizes:
             for seed in seeds:
+                if (scheme_name, size, seed) in done:
+                    print(f"{scheme_name:<10} | {size:<5} | {seed:<4} | (skipped — already done)")
+                    continue
+
                 instance = generate_random_instance(
                     weapons=size,
                     targets=size,
@@ -556,10 +573,10 @@ def run_bertsimas_benchmark(
                     print(f"{scheme_name:<10} | {size:<5} | {seed:<4} | ERROR: {exc}")
                     results.append({"scheme": scheme_name, "size": size, "seed": seed, "error": str(exc)})
 
-    output_dir = Path("results")
-    output_dir.mkdir(exist_ok=True)
+                # Save after every row so crashes don't lose data
+                pd.DataFrame(results).to_csv(csv_path, index=False)
+
     df = pd.DataFrame(results)
-    csv_path = output_dir / "benchmark_bertsimas.csv"
     df.to_csv(csv_path, index=False)
     print(f"\nResults saved to: {csv_path}")
     return df

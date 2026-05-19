@@ -7,7 +7,7 @@ import pandas as pd
 import seaborn as sns
 
 from wta_optimization.data import generate_random_instance, load_instance_from_file
-from wta_optimization.exact import solve_exact
+from wta_optimization.exact import solve_exact, solve_branch_and_adjust, solve_outer_approximation
 from wta_optimization.heuristic import (
     solve_greedy,
     solve_local_search,
@@ -20,7 +20,9 @@ METHOD_SPECS = [
     ("greedy", "Greedy", "tab:orange"),
     ("ls", "Greedy + Local Search", "tab:blue"),
     ("sa", "Simulated Annealing", "tab:green"),
-    ("exact", "Exact MIP", "black"),
+    ("exact", "Exact MIP (PuLP)", "black"),
+    ("bna", "Branch & Adjust (SCIP)", "tab:red"),
+    ("oa", "Outer Approximation (SCIP)", "tab:purple"),
 ]
 
 EXACT_TIME_LIMIT_SECONDS = 5400.0
@@ -46,11 +48,26 @@ def _evaluate_methods(
         warm_start=sol_greedy if use_exact_warm_start else None,
         time_limit_seconds=exact_time_limit_seconds,
     )
+
+    sol_bna = solve_branch_and_adjust(
+        instance,
+        warm_start=sol_greedy if use_exact_warm_start else None,
+        time_limit_seconds=exact_time_limit_seconds,
+    )
+
+    sol_oa = solve_outer_approximation(
+        instance,
+        warm_start=sol_greedy if use_exact_warm_start else None,
+        time_limit_seconds=exact_time_limit_seconds,
+    )
+
     return {
         "greedy": sol_greedy,
         "ls": sol_ls,
         "sa": sol_sa,
         "exact": sol_exact,
+        "bna": sol_bna,
+        "oa": sol_oa,
     }
 
 
@@ -160,36 +177,65 @@ def run_benchmark(
         dir_path = Path(dir_path)
         files = sorted(dir_path.glob("*.txt"), key=_numeric_file_sort_key)
 
+        output_dir = Path("results")
+        output_dir.mkdir(exist_ok=True)
+        csv_path = output_dir / "benchmark_results_from_files.csv"
+
+        # Load existing results so we can resume without re-running completed files.
+        # Only resume if the CSV already contains OA/BnA columns (otherwise it's an
+        # old file from before those methods were added and we must re-run everything).
+        if csv_path.exists():
+            existing_df = pd.read_csv(csv_path)
+            if "oa_time_s" in existing_df.columns and "bna_time_s" in existing_df.columns:
+                results = existing_df.to_dict("records")
+                done_files = {r["file"] for r in results if "error" not in r or pd.isna(r.get("error"))}
+                print(f"Resuming — {len(done_files)} existing rows loaded from {csv_path}")
+            else:
+                print(f"Old CSV found (no OA/BnA columns) — re-running all files.")
+                results = []
+                done_files: set[str] = set()
+        else:
+            results = []
+            done_files: set[str] = set()
+
         print("Starting WTA Optimization Benchmark (From Files)...")
-        print(f"Exact MIP time limit per instance: {exact_time_limit_seconds / 3600:.1f} h")
-        print(f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
+        print(f"Time limit per instance: {exact_time_limit_seconds:.0f}s")
+        print(f"Warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
         print(
-            f"{'File':<20} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | "
-            f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8} | {'Exact Status':<12}"
+            f"{'File':<12} | {'BnA T':<8} | {'OA T':<8} | {'Exact T':<8} | "
+            f"{'BnA Gap%':<9} | {'OA Gap%':<8} | {'Gr Gap%':<8} | Status"
         )
 
         for index, file in enumerate(files, start=1):
-            print(f"Processing [{index}/{len(files)}]: {file.name}")
+            if file.name in done_files:
+                print(f"{file.name:<12} | (skipped — already done)")
+                continue
+
+            print(f"[{index}/{len(files)}] {file.name} ...", end="", flush=True)
             instance = load_instance_from_file(file)
-            solutions = _evaluate_methods(
-                instance,
-                exact_time_limit_seconds=exact_time_limit_seconds,
-                use_exact_warm_start=use_exact_warm_start,
-            )
-            row = _build_result_row({"file": file.name}, solutions)
-            results.append(row)
+            try:
+                solutions = _evaluate_methods(
+                    instance,
+                    exact_time_limit_seconds=exact_time_limit_seconds,
+                    use_exact_warm_start=use_exact_warm_start,
+                )
+                row = _build_result_row({"file": file.name}, solutions)
+                results.append(row)
 
-            print(
-                f"{file.name:<20} | {row['exact_time_s']:<10.4f} | {row['greedy_time_s']:<10.4f} | "
-                f"{row['ls_time_s']:<10.4f} | {row['sa_time_s']:<10.4f} | "
-                f"{row['optimality_gap_pct_greedy']:<8.2f} | {row['optimality_gap_pct_ls']:<8.2f} | "
-                f"{row['optimality_gap_pct_sa']:<8.2f} | {row['exact_status']:<12}"
-            )
+                print(
+                    f"\r{file.name:<12} | {row['bna_time_s']:<8.2f} | {row['oa_time_s']:<8.2f} | "
+                    f"{row['exact_time_s']:<8.2f} | {row['optimality_gap_pct_bna']:<9.2f} | "
+                    f"{row['optimality_gap_pct_oa']:<8.2f} | {row['optimality_gap_pct_greedy']:<8.2f} | "
+                    f"{row['exact_status']}"
+                )
+            except Exception as exc:
+                print(f"\r{file.name:<12} | ERROR: {exc}")
+                results.append({"file": file.name, "error": str(exc)})
 
-        output_dir = Path("results")
-        output_dir.mkdir(exist_ok=True)
+            # Save after every file so crashes don't lose data
+            pd.DataFrame(results).to_csv(csv_path, index=False)
+
         df = pd.DataFrame(results)
-        csv_path = output_dir / "benchmark_results_from_files.csv"
         df.to_csv(csv_path, index=False)
         print(f"\nResults saved to: {csv_path}")
         return df
@@ -480,11 +526,138 @@ def plot_sensitivity_analysis(df: pd.DataFrame) -> None:
         plt.close()
 
 
+def run_bertsimas_benchmark(
+    sizes: list[int] | None = None,
+    seeds: list[int] | None = None,
+    schemes_to_run: list[str] | None = None,
+    exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
+    use_exact_warm_start: bool = True,
+) -> pd.DataFrame:
+    """Run benchmark on instances generated following Bertsimas & Paskov (2025) schemes.
+
+    Scheme 1 (hard): P_ij ~ Uniform(0, 1), v_j ~ Uniform integer [1, 100]
+    Scheme 2:        P_ij ~ Uniform(0.6, 0.9), v_j ~ Uniform integer [25, 100]
+    """
+    sizes = sizes or [5, 10, 15, 20, 25, 30]
+    seeds = seeds or [42, 43, 44]
+
+    all_schemes = [
+        ("scheme1", (0.0, 1.0), (1.0, 100.0)),
+        ("scheme2", (0.6, 0.9), (25.0, 100.0)),
+    ]
+    schemes = [(n, p, v) for n, p, v in all_schemes
+               if schemes_to_run is None or n in schemes_to_run]
+
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    csv_path = output_dir / "benchmark_bertsimas.csv"
+
+    # Load existing results so we can resume and append without losing data
+    if csv_path.exists():
+        existing_df = pd.read_csv(csv_path)
+        results = existing_df.to_dict("records")
+        done = {(r["scheme"], int(r["size"]), int(r["seed"])) for r in results
+                if "error" not in r or pd.isna(r.get("error"))}
+        print(f"Resuming — {len(done)} existing rows loaded from {csv_path}")
+    else:
+        results = []
+        done: set[tuple[str, int, int]] = set()
+
+    print("Starting WTA Benchmark on Bertsimas & Paskov (2025) Instance Schemes...")
+    print(f"Exact MIP time limit per instance: {exact_time_limit_seconds:.0f}s")
+    print(f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
+    print(
+        f"{'Scheme':<10} | {'Size':<5} | {'Seed':<4} | {'Exact T':<10} | "
+        f"{'Gr T':<8} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8} | {'BnA Gap%':<9} | {'OA Gap%':<8} | Status"
+    )
+
+    for scheme_name, prob_range, val_range in schemes:
+        for size in sizes:
+            for seed in seeds:
+                if (scheme_name, size, seed) in done:
+                    print(f"{scheme_name:<10} | {size:<5} | {seed:<4} | (skipped — already done)")
+                    continue
+
+                instance = generate_random_instance(
+                    weapons=size,
+                    targets=size,
+                    seed=seed,
+                    target_value_range=val_range,
+                    destruction_probability_range=prob_range,
+                )
+                try:
+                    solutions = _evaluate_methods(
+                        instance,
+                        exact_time_limit_seconds=exact_time_limit_seconds,
+                        use_exact_warm_start=use_exact_warm_start,
+                    )
+                    row = _build_result_row({"scheme": scheme_name, "size": size, "seed": seed}, solutions)
+                    results.append(row)
+
+                    print(
+                        f"{scheme_name:<10} | {size:<5} | {seed:<4} | "
+                        f"{row['exact_time_s']:<10.4f} | {row['greedy_time_s']:<8.4f} | "
+                        f"{row['optimality_gap_pct_greedy']:<8.2f} | {row['optimality_gap_pct_ls']:<8.2f} | "
+                        f"{row['optimality_gap_pct_sa']:<8.2f} | {row['optimality_gap_pct_bna']:<9.2f} | "
+                        f"{row['optimality_gap_pct_oa']:<8.2f} | {row['exact_status']}"
+                    )
+                except Exception as exc:
+                    print(f"{scheme_name:<10} | {size:<5} | {seed:<4} | ERROR: {exc}")
+                    results.append({"scheme": scheme_name, "size": size, "seed": seed, "error": str(exc)})
+
+                # Save after every row so crashes don't lose data
+                pd.DataFrame(results).to_csv(csv_path, index=False)
+
+    df = pd.DataFrame(results)
+    df.to_csv(csv_path, index=False)
+    print(f"\nResults saved to: {csv_path}")
+    return df
+
+
+def plot_bertsimas_benchmark(df: pd.DataFrame) -> None:
+    sns.set_theme(style="whitegrid")
+    output_dir = Path("results")
+
+    for scheme in df["scheme"].unique():
+        scheme_df = df[df["scheme"] == scheme]
+        agg_df = (
+            scheme_df.groupby("size", as_index=False)
+            .agg({col: "mean" for col in scheme_df.columns if col not in ("scheme", "size", "seed") and pd.api.types.is_numeric_dtype(scheme_df[col])})
+        )
+
+        plt.figure(figsize=(11, 6))
+        for method_key, label, _ in METHOD_SPECS:
+            plt.plot(agg_df["size"], agg_df[f"{method_key}_time_s"], marker="o", label=label)
+        plt.yscale("log")
+        plt.title(f"Execution Time — Bertsimas {scheme}")
+        plt.xlabel("Problem Size (N weapons = N targets)")
+        plt.ylabel("Time (seconds)")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(output_dir / f"bertsimas_{scheme}_time.png", dpi=300)
+        plt.close()
+
+        plt.figure(figsize=(11, 6))
+        for method_key, label, color in METHOD_SPECS:
+            if method_key == "exact":
+                continue
+            plt.plot(agg_df["size"], agg_df[f"optimality_gap_pct_{method_key}"], marker="o", color=color, label=f"{label} Gap %")
+        plt.title(f"Optimality Gap — Bertsimas {scheme}")
+        plt.xlabel("Problem Size (N weapons = N targets)")
+        plt.ylabel("Optimality Gap (%)")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(output_dir / f"bertsimas_{scheme}_gap.png", dpi=300)
+        plt.close()
+
+    print(f"Bertsimas benchmark plots saved to {output_dir}/")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run WTA optimization benchmarks and analyses.")
     parser.add_argument(
         "--mode",
-        choices=["files", "random", "warm", "sensitivity", "all"],
+        choices=["files", "random", "warm", "sensitivity", "bertsimas", "all"],
         default="files",
         help="Select which analysis to run. Default: files.",
     )
@@ -498,6 +671,24 @@ def _parse_args() -> argparse.Namespace:
         "--no-exact-warm-start",
         action="store_true",
         help="Disable warm start from the greedy heuristic for exact benchmark solves.",
+    )
+    parser.add_argument(
+        "--bertsimas-sizes",
+        type=str,
+        default=None,
+        help="Comma-separated list of sizes for Bertsimas benchmark (e.g. 5,10,20,50,100). Overrides default.",
+    )
+    parser.add_argument(
+        "--bertsimas-seeds",
+        type=str,
+        default=None,
+        help="Comma-separated list of seeds for Bertsimas benchmark (e.g. 42,43,44). Overrides default.",
+    )
+    parser.add_argument(
+        "--bertsimas-schemes",
+        type=str,
+        default=None,
+        help="Comma-separated list of schemes to run: scheme1,scheme2. Default: both.",
     )
     return parser.parse_args()
 
@@ -533,6 +724,31 @@ def main() -> None:
             use_exact_warm_start=use_exact_warm_start,
         )
         plot_sensitivity_analysis(sensitivity_df)
+
+    if args.mode in {"bertsimas"}:
+        bertsimas_sizes = (
+            [int(s) for s in args.bertsimas_sizes.split(",")]
+            if args.bertsimas_sizes
+            else None
+        )
+        bertsimas_seeds = (
+            [int(s) for s in args.bertsimas_seeds.split(",")]
+            if args.bertsimas_seeds
+            else None
+        )
+        bertsimas_schemes = (
+            [s.strip() for s in args.bertsimas_schemes.split(",")]
+            if args.bertsimas_schemes
+            else None
+        )
+        bertsimas_df = run_bertsimas_benchmark(
+            sizes=bertsimas_sizes,
+            seeds=bertsimas_seeds,
+            schemes_to_run=bertsimas_schemes,
+            exact_time_limit_seconds=args.exact_limit_seconds,
+            use_exact_warm_start=use_exact_warm_start,
+        )
+        plot_bertsimas_benchmark(bertsimas_df)
 
 
 if __name__ == "__main__":

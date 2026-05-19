@@ -35,39 +35,27 @@ RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(exist_ok=True)
 
 # --------------------------------------------------------------------------
-# 1.  Load our benchmark results — prefer file-based (same instances as paper)
+# 1.  Load our benchmark results — random Scheme-2 instances
+#     (same generation method as Bertsimas & Paskov (2025) paper)
 # --------------------------------------------------------------------------
-files_csv = RESULTS_DIR / "benchmark_results_from_files.csv"
-bertsimas_csv = RESULTS_DIR / "benchmark_bertsimas.csv"
-
-use_file_instances = False
-if files_csv.exists():
-    fdf = pd.read_csv(files_csv)
-    if "oa_time_s" in fdf.columns and "bna_time_s" in fdf.columns:
-        # Extract numeric N from filename (wta50.txt → 50)
-        fdf["size"] = fdf["file"].str.extract(r"(\d+)").astype(int)
-        # Keep only rows without errors
-        fdf = fdf[fdf["error"].isna()] if "error" in fdf.columns else fdf
-        if not fdf.empty:
-            ours = fdf[["size", "oa_time_s", "bna_time_s", "exact_time_s",
-                        "oa_status", "bna_status", "exact_status"]].copy()
-            use_file_instances = True
-            print("Using Andersen wta*.txt file instances (same data as paper Table 1).")
-
-if not use_file_instances:
-    df = pd.read_csv(bertsimas_csv)
-    df2 = df[df["scheme"] == "scheme2"].copy()
-    agg_cols = {col: "mean" for col in df2.columns
-                if col not in ("scheme", "size", "seed")
-                and pd.api.types.is_numeric_dtype(df2[col])}
-    ours = df2.groupby("size", as_index=False).agg(agg_cols)
-    print("Using random Bertsimas Scheme-2 instances (file benchmark not yet run).")
+df = pd.read_csv(RESULTS_DIR / "benchmark_bertsimas.csv")
+df2 = df[df["scheme"] == "scheme2"].copy()
 
 # Identify rows that reached the time limit for each method
 for method in ("oa", "bna", "exact"):
     status_col = f"{method}_status"
-    if status_col in ours.columns:
-        ours[f"{method}_timed_out"] = ~ours[status_col].str.lower().str.contains("optimal", na=False)
+    if status_col in df2.columns:
+        df2[f"{method}_timed_out"] = ~df2[status_col].str.lower().str.contains("optimal", na=False)
+
+# Aggregate per size: mean time, "any timeout" flag
+agg_cols = {col: "mean" for col in df2.columns
+            if col not in ("scheme", "size", "seed")
+            and pd.api.types.is_numeric_dtype(df2[col])}
+ours = df2.groupby("size", as_index=False).agg(agg_cols)
+for method in ("oa", "bna", "exact"):
+    timed_col = f"{method}_timed_out"
+    if timed_col in df2.columns:
+        ours[f"{method}_timed_out"] = ours["size"].map(df2.groupby("size")[timed_col].any())
     else:
         ours[f"{method}_timed_out"] = False
 
@@ -106,8 +94,7 @@ combined = pd.concat(
 combined.to_csv(RESULTS_DIR / "comparison_bpc_vs_oa.csv", index=False)
 print(f"Saved → {RESULTS_DIR / 'comparison_bpc_vs_oa.csv'}")
 
-label = "Andersen wta files" if use_file_instances else "Scheme-2 random (mean)"
-print(f"\nOur methods ({label}):")
+print("\nOur methods (random Scheme-2, mean over seeds):")
 print(ours[["size", "oa_time_s", "bna_time_s", "exact_time_s"]].to_string(index=False))
 
 print(f"\nBPC (Bertsimas) vs BA (Andersen) — large instances:")
@@ -168,10 +155,9 @@ ax.set_yscale("log")
 ax.set_xlabel("Problem size  N  (weapons = targets)", fontsize=12)
 ax.set_ylabel("Solve time (seconds, log scale)", fontsize=12)
 
-data_label = "Andersen wta*.txt — same instances as paper" if use_file_instances else "random Scheme-2"
 n_our = f"{ours['size'].min()}–{ours['size'].max()}"
 ax.set_title(
-    f"Solve Time: Our Methods (N={n_our}, {data_label})\nvs Bertsimas & Paskov (2025) BPC (N=200–450)",
+    f"Solve Time: Our Methods (N={n_our}, random Scheme-2 instances)\nvs Bertsimas & Paskov (2025) BPC (N=200–450)",
     fontsize=11,
 )
 ax.legend(fontsize=9, loc="upper left")

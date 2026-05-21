@@ -12,7 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Pobiera pełną historię, potrzebną do commitowania
+          fetch-depth: 0  # Pobiera pełną historię
+          ref: ${{ github.head_ref || github.ref_name }}  # Obsługuje zarówno PR, jak i push
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -35,8 +36,7 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           git add .
-          # Sprawdź, czy są zmiany do commita
           if ! git diff --cached --quiet; then
             git commit -m "Auto-format code and sort imports [skip ci]"
-            git push
+            git push origin HEAD:${{ github.ref_name }}
           fi

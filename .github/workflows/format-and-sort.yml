@@ -1,0 +1,42 @@
+name: Format and Sort Imports
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Pobiera pełną historię, potrzebną do commitowania
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install Black and isort
+        run: |
+          python -m pip install --upgrade pip
+          pip install black isort
+
+      - name: Format code with Black
+        run: black .
+
+      - name: Sort imports with isort
+        run: isort .
+
+      - name: Commit changes
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add .
+          # Sprawdź, czy są zmiany do commita
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto-format code and sort imports [skip ci]"
+            git push
+          fi

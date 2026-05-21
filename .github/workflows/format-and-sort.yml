@@ -38,5 +38,5 @@ jobs:
           git add .
           if ! git diff --cached --quiet; then
             git commit -m "Auto-format code and sort imports [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
+            git push origin HEAD:${{ github.head_ref || github.ref_name }}
           fi

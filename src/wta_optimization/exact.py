@@ -216,28 +216,44 @@ def solve_branch_and_adjust(
     """
     Exact Branch-and-Adjust algorithm (Section 6 of Andersen et al. 2022).
 
-    Uses a compact convex underapproximation of the WTA objective function (WTA_LA)
-    as a lower bound in the B&B tree. Upon finding an integer solution,
-    it calculates its TRUE nonlinear value and updates the upper bound.
+    Uses a compact convex underapproximation of the WTA objective (WTA_LA)
+    as a lower bound in the B&B tree. When an integer solution x* is found,
+    its TRUE nonlinear WTA value is computed and used to update the upper bound.
 
-    Key components:
-    - Lambda variables with breakpoints from the delta-based procedure (eq. 5.2-5.4)
-    - Lambda objective coefficients from eq. (5.5) / get_lbda_obj from original CPLEX
-    - MIPSOL Callback: calculates true WTA, adds lazy cuts forcing
-      the real z[j] value for the assignment found
-    - BranchPriority: proxy for the branching strategy from Algorithm 1 (line 13)
+    Model structure (WTA_BranchAdjust_Int from original CPLEX code):
+    - x[i,j]     : integer assignment variables (binary for mu=1)
+    - lbda[j,t]  : convex combination weights on breakpoints (no obj coefficient)
+    - z[j]       : weighted approximated cost for target j — IN THE OBJECTIVE
+                   z[j] >= under_approx(j) via z_link constraint
+    - Objective  : minimize sum_j z[j]
+
+    Objective coefficients per get_lbda_obj (eq. 5.5):
+      t == 0        : w_j * exp(b[j,0])
+      0 < t < last  : w_j * (exp(b[j,t]) - delta)   ← -delta correction required
+      t == last     : w_j * 1.0                      ← exp(0) = 1
+
+    Adjust callback (equivalent to CPLEX IncumbentCallback + HeuristicCallback):
+      When Gurobi finds integer x* with approx cost < true WTA(x*):
+        - Compute true WTA(x*)
+        - Update best_true_obj / best_assignment
+        - Add lazy cut: z[j] >= true_cost_j * (1 - delta_x)
+          delta_x = 0  when x = x*  →  z[j] >= true_cost_j
+          delta_x >= 1 otherwise    →  constraint non-binding
+        - Gurobi re-evaluates x* with z[j] forced to true_cost_j
+          → objective = sum true_cost_j = true WTA(x*)
+          → Gurobi records TRUE cost as incumbent value ✓
 
     Parameters
     ----------
-    instance            : WTA instance
-    delta               : approximation precision parameter (smaller = more exact, slower)
-    warm_start          : optional starting assignment
-    time_limit_seconds  : time limit in seconds
+    instance           : WTA instance
+    delta              : approximation precision (smaller = more exact, slower)
+    warm_start         : optional starting assignment
+    time_limit_seconds : time limit in seconds
     """
     start = perf_counter()
     warm_start_assignment = _normalize_warm_start(instance, warm_start)
 
-    # mu[i] = 1 for all weapons (by default; extend WTAInstance if needed)
+    # mu[i] = 1 for all weapons by default; set instance.mu for mu > 1
     mu: list[int] = getattr(instance, "mu", [1] * instance.weapons)
 
     with gp.Env(empty=True) as env:
@@ -253,17 +269,17 @@ def solve_branch_and_adjust(
 
             # ------------------------------------------------------------------
             # Decision variables x[i,j]
-            # Binary for mu=1; change to INTEGER with ub=mu[i] when mu > 1
+            # Binary when mu[i]=1 (default); use GRB.INTEGER + ub=mu[i] for mu>1
             # ------------------------------------------------------------------
             x: dict[tuple[int, int], gp.Var] = {}
             for i in range(weapons):
                 for j in range(targets):
                     x[i, j] = model.addVar(
-                        vtype=GRB.BINARY,   # GRB.INTEGER + ub=mu[i] when mu[i]>1
+                        vtype=GRB.BINARY,
                         name=f"x_{i}_{j}",
                     )
 
-            # Each type of weapon used at most mu[i] times in total (eq. 2.3)
+            # Constraint (2.3): each weapon type used at most mu[i] times total
             for i in range(weapons):
                 model.addConstr(
                     gp.quicksum(x[i, j] for j in range(targets)) <= mu[i],
@@ -271,32 +287,54 @@ def solve_branch_and_adjust(
                 )
 
             # ------------------------------------------------------------------
-            # Delta-based breakpoints (procedure from Section 5, eq. 3.14 + 5.2-5.4)
+            # Delta-based breakpoints per target (Section 5, eq. 3.14 + 5.2-5.4)
             # ------------------------------------------------------------------
             B: list[list[float]] = []
             for j in range(targets):
-                b_j = _compute_breakpoints(instance.destruction_probabilities, mu, j, delta)
+                b_j = _compute_breakpoints(
+                    instance.destruction_probabilities, mu, j, delta
+                )
                 B.append(b_j)
 
             # ------------------------------------------------------------------
-            # Lambda variables lambda[j,t] — convex combination on breakpoints
-            # Objective coefficients per get_lbda_obj (eq. 5.5 + Section 5):
-            #   t == 0         : w_j * exp(b[j,0])
-            #   0 < t < last   : w_j * (exp(b[j,t]) - delta)   ← correction -delta
-            #   t == last      : w_j * 1.0                      ← exp(0) = 1
+            # Lambda variables — convex combination weights on breakpoints.
+            # NO objective coefficient here: the objective goes through z[j].
             # ------------------------------------------------------------------
             lbda: dict[tuple[int, int], gp.Var] = {}
             for j in range(targets):
+                for t in range(len(B[j])):
+                    lbda[j, t] = model.addVar(lb=0.0, name=f"lbda_{j}_{t}")
+
+            # ------------------------------------------------------------------
+            # z[j] — weighted approximated cost of target j, IN THE OBJECTIVE.
+            # This is the variable that gets forced up by lazy cuts to the true
+            # cost, making Gurobi record the TRUE incumbent value.
+            # ------------------------------------------------------------------
+            z: dict[int, gp.Var] = {}
+            for j in range(targets):
+                # obj=1.0: z[j] is directly in the objective (minimize sum z[j])
+                z[j] = model.addVar(lb=0.0, obj=1.0, name=f"z_{j}")
+
                 w_j = instance.target_values[j]
                 n_t = len(B[j])
-                for t, b_val in enumerate(B[j]):
-                    if t == 0:
-                        obj_coef = w_j * math.exp(b_val)
-                    elif t < n_t - 1:
-                        obj_coef = w_j * (math.exp(b_val) - delta)
-                    else:
-                        obj_coef = w_j * 1.0
-                    lbda[j, t] = model.addVar(lb=0.0, obj=obj_coef, name=f"lbda_{j}_{t}")
+
+                # Under-approximation coefficients per get_lbda_obj (eq. 5.5):
+                #   t == 0        : w_j * exp(b[j,0])
+                #   0 < t < last  : w_j * (exp(b[j,t]) - delta)
+                #   t == last     : w_j * 1.0
+                under_approx = gp.quicksum(
+                    (
+                        w_j * math.exp(B[j][t]) if t == 0
+                        else w_j * (math.exp(B[j][t]) - delta) if t < n_t - 1
+                        else w_j * 1.0
+                    ) * lbda[j, t]
+                    for t in range(n_t)
+                )
+
+                # z[j] >= under-approximation of w_j * survival[j]
+                # When lazy cut later forces z[j] >= true_cost_j for x*,
+                # the objective correctly reflects the true WTA value.
+                model.addConstr(z[j] >= under_approx, name=f"z_link_{j}")
 
             model.ModelSense = GRB.MINIMIZE
 
@@ -306,7 +344,7 @@ def solve_branch_and_adjust(
             for j in range(targets):
                 n_t = len(B[j])
 
-                # (5.12): sum_t lambda[j,t] = 1
+                # (5.12): sum_t lambda[j,t] = 1  (convex combination)
                 model.addConstr(
                     gp.quicksum(lbda[j, t] for t in range(n_t)) == 1.0,
                     name=f"sc3_{j}",
@@ -315,32 +353,17 @@ def solve_branch_and_adjust(
                 # (5.11): sum_t lambda[j,t]*b[j,t] = sum_i ln(1-p[i,j]) * x[i,j]
                 lhs = gp.quicksum(B[j][t] * lbda[j, t] for t in range(n_t))
                 rhs = gp.quicksum(
-                    math.log(max(1.0 - instance.destruction_probabilities[i][j], _EPS)) * x[i, j]
+                    math.log(max(1.0 - instance.destruction_probabilities[i][j], _EPS))
+                    * x[i, j]
                     for i in range(weapons)
                 )
                 model.addConstr(lhs == rhs, name=f"sc2_{j}")
 
             # ------------------------------------------------------------------
-            # Auxiliary variable z[j] = approximated weighted cost of target j
-            # Needed in the callback to compare with true_cost_j = w_j * true_z_j
-            # ------------------------------------------------------------------
-            z: dict[int, gp.Var] = {}
-            for j in range(targets):
-                z[j] = model.addVar(lb=0.0, name=f"z_{j}")
-                # z[j] >= sum of coefficients * lambda (lower link to approximation)
-                under_approx = gp.quicksum(
-                    (
-                        instance.target_values[j] * math.exp(B[j][t]) if t == 0
-                        else instance.target_values[j] * (math.exp(B[j][t]) - delta) if t < len(B[j]) - 1
-                        else instance.target_values[j] * 1.0
-                    ) * lbda[j, t]
-                    for t in range(len(B[j]))
-                )
-                model.addConstr(z[j] >= under_approx, name=f"z_link_{j}")
-
-            # ------------------------------------------------------------------
             # Branching priorities (proxy for Algorithm 1, line 13)
-            # Variables with larger |w_j * ln(1-p_ij)| branched first
+            # Variables with larger |w_j * ln(1-p_ij)| branched first —
+            # matches CPLEX BranchCallback's "unfixed variable with smallest
+            # objective coefficient" strategy.
             # ------------------------------------------------------------------
             for i in range(weapons):
                 for j in range(targets):
@@ -355,26 +378,39 @@ def solve_branch_and_adjust(
                     for j in range(targets):
                         x[i, j].Start = warm_start_assignment[i][j]
 
-            # Pass references to the callback via model attributes
+            # Precompute sum of all x variables for efficient Hamming distance in callback.
+            # This avoids building a 500k-term expression inside the callback.
+            all_x_sum = gp.quicksum(
+                x[i, j] for i in range(weapons) for j in range(targets)
+            )
+
+            # Pass references to callback via model attributes
             model._x = x
             model._z = z
             model._B = B
             model._instance = instance
+            model._all_x_sum = all_x_sum
             model._best_true_obj = float("inf")
             model._best_assignment = None
 
             # ------------------------------------------------------------------
-            # CALLBACK: Branch-and-Adjust (equivalent to CPLEX IncumbentCallback)
+            # CALLBACK: Branch-and-Adjust
+            # (equivalent to CPLEX IncumbentCallback + HeuristicCallback)
             #
-            # When Gurobi finds an integer solution x*:
-            #   1. Calculate the TRUE nonlinear WTA(x*) value
+            # When Gurobi finds integer solution x*:
+            #   1. Compute TRUE nonlinear WTA(x*)
             #   2. Update best_true_obj and best_assignment
-            #   3. For each j where z[j] < w_j*true_z[j]:
+            #   3. For each j where z[j] < w_j * true_z[j] (model underestimated):
             #      Add lazy cut: z[j] >= true_cost_j * (1 - delta_x)
-            #      When delta_x = 0 (same x*): forces z[j] = true_cost_j
-            #      When delta_x >= 1 (other x) : non-binding constraint (>=0)
-            #   4. Gurobi re-evaluates the node with the new constraint and accepts
-            #      the incumbent with the true cost — replaces CPLEX reject()+inject()
+            #      - delta_x = 0 (same x*)   → z[j] >= true_cost_j
+            #      - delta_x >= 1 (other x)  → z[j] >= 0 (non-binding)
+            #   4. Gurobi re-evaluates x* with z[j] forced to true_cost_j
+            #      → objective = sum_j true_cost_j = TRUE WTA(x*)
+            #      → Gurobi records incumbent with TRUE cost ✓
+            #
+            # This replaces CPLEX's three-callback mechanism:
+            #   IncumbentCallback.reject() + HeuristicCallback.set_solution()
+            #   + BranchCallback for integer-node branching
             # ------------------------------------------------------------------
             def bna_callback(cb_model, where):
                 if where != GRB.Callback.MIPSOL:
@@ -387,57 +423,71 @@ def solve_branch_and_adjust(
                 n_w = inst.weapons
                 n_t = inst.targets
 
-                # True survival value of each target: prod_i (1-p_ij)^x_ij
+                # Compute TRUE survival probability: prod_i (1 - p_ij)^x_ij
                 true_z = [1.0] * n_t
-                assigned: list[tuple[int, int]] = []    # (i,j) where x[i,j] = 1
-                not_assigned: list[tuple[int, int]] = []
+                assigned: list[tuple[int, int]] = []  # (i,j) where x[i,j] = 1
 
                 for i in range(n_w):
                     for j in range(n_t):
                         val = x_val[i, j]
                         if val > 0.5:
-                            # For binary variables val ≈ 1; for integer val = r
-                            true_z[j] *= (1.0 - inst.destruction_probabilities[i][j]) ** round(val)
+                            true_z[j] *= (
+                                    (1.0 - inst.destruction_probabilities[i][j])
+                                    ** round(val)
+                            )
                             assigned.append((i, j))
-                        else:
-                            not_assigned.append((i, j))
 
-                true_obj = sum(inst.target_values[j] * true_z[j] for j in range(n_t))
+                true_obj = sum(
+                    inst.target_values[j] * true_z[j] for j in range(n_t)
+                )
 
-                # Update best solution
+                # Track best true solution found so far
                 if true_obj < cb_model._best_true_obj:
                     cb_model._best_true_obj = true_obj
+                    assigned_set = set(assigned)
                     cb_model._best_assignment = tuple(
                         tuple(
-                            1 if (i, j) in set(assigned) else 0
+                            1 if (i, j) in assigned_set else 0
                             for j in range(n_t)
                         )
                         for i in range(n_w)
                     )
 
-                # Build Hamming distance expression:
-                #   delta_x = sum_{(i,j) in S1} (1 - x[i,j])  +  sum_{(i,j) in S0} x[i,j]
-                #   delta_x = 0  ↔  current x = x*
-                #   delta_x >= 1  ↔  differs in at least one position
+                # Build Hamming distance expression (computed once, reused for all j):
+                #   delta_x = |S1| - 2*sum_{S1} x[i,j] + sum_{all} x[i,j]
+                #   delta_x = 0   ↔   current x equals x*
+                #   delta_x >= 1  ↔   differs in at least one position
+                #
+                # O(|assigned|) terms — avoids building a ~500k-term expression
+                # by exploiting: sum_{S0} x[i,j] = sum_{all} x[i,j] - sum_{S1} x[i,j]
                 delta_x_expr: gp.LinExpr | None = None
 
                 for j in range(n_t):
                     true_cost_j = inst.target_values[j] * true_z[j]
 
-                    # Add cut only when the model underestimated target j cost
+                    # Add cut only when model underestimated cost for target j
                     if z_val[j] < true_cost_j - 1e-6:
                         if delta_x_expr is None:
-                            # Create Hamming expression once, reuse for all j
-                            delta_x_expr = gp.quicksum(
-                                1 - cb_model._x[i, j2] for (i, j2) in assigned
-                            ) + gp.quicksum(
-                                cb_model._x[i, j2] for (i, j2) in not_assigned
+                            # Efficient Hamming distance using precomputed all_x_sum
+                            delta_x_expr = (
+                                    len(assigned)
+                                    - 2 * gp.quicksum(
+                                cb_model._x[i, j2] for (i, j2) in assigned
+                            )
+                                    + cb_model._all_x_sum
                             )
 
-                        # Lazy cut (eq. key Adjust step):
+                        # KEY ADJUST STEP:
                         #   z[j] >= true_cost_j * (1 - delta_x)
-                        # When delta_x = 0: z[j] >= true_cost_j  → solver will use true cost
-                        # When delta_x >= 1: z[j] >= 0           → non-binding
+                        #
+                        #   When delta_x = 0 (same assignment):
+                        #     z[j] >= true_cost_j
+                        #     → objective = sum z[j] = sum true_cost_j = TRUE WTA(x*)
+                        #     → Gurobi accepts incumbent with TRUE cost
+                        #
+                        #   When delta_x >= 1 (different assignment):
+                        #     z[j] >= true_cost_j * (1 - delta_x) <= 0
+                        #     → non-binding (z[j] >= 0 already)
                         cb_model.cbLazy(
                             cb_model._z[j] >= true_cost_j * (1.0 - delta_x_expr)
                         )
@@ -461,8 +511,10 @@ def solve_branch_and_adjust(
                 final_assignment = model._best_assignment
                 final_obj = model._best_true_obj
             else:
-                # Fallback: no integer solution was found
-                final_assignment = tuple(tuple(0 for _ in range(targets)) for _ in range(weapons))
+                # Fallback: no integer solution found within time limit
+                final_assignment = tuple(
+                    tuple(0 for _ in range(targets)) for _ in range(weapons)
+                )
                 final_obj = float("inf")
 
             return WTASolution(

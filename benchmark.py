@@ -21,7 +21,7 @@ METHOD_SPECS = [
     ("ls", "Greedy + Local Search", "tab:blue"),
     ("sa", "Simulated Annealing", "tab:green"),
     ("exact", "Exact MIP (PuLP)", "black"),
-    ("bna", "Branch & Adjust (SCIP)", "tab:red"),
+    ("bna", "Branch & Adjust (Gurobi)", "tab:red"),
 ]
 
 EXACT_TIME_LIMIT_SECONDS = 5400.0

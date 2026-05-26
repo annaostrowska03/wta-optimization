@@ -29,6 +29,47 @@ def generate_random_instance(
     )
 
 
+def load_andersen_instance(filepath: str | Path) -> tuple[WTAInstance, int]:
+    """Load a non-square WTA instance from Andersen et al. (2022) file format.
+
+    File format:
+        W T mu            ← header line (mu = weapon availability per weapon)
+        v_1               ← T target values (integers), one per line
+        ...
+        v_T
+        w_idx t_idx p     ← W×T destruction probabilities (one per line)
+        ...
+
+    Returns
+    -------
+    (instance, mu)  where mu is the integer weapon availability for all weapons.
+    """
+    path = Path(filepath)
+    with open(path, "r") as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    header = lines[0].split()
+    weapons, targets, mu = int(header[0]), int(header[1]), int(header[2])
+
+    target_values = tuple(float(lines[i + 1]) for i in range(targets))
+
+    # Each probability line: "w_idx t_idx prob_float"
+    probs = [[0.0] * targets for _ in range(weapons)]
+    for k in range(weapons * targets):
+        parts = lines[targets + 1 + k].split()
+        w_idx, t_idx, prob = int(parts[0]), int(parts[1]), float(parts[2])
+        probs[w_idx][t_idx] = prob
+
+    destruction_probabilities = tuple(tuple(row) for row in probs)
+
+    return WTAInstance(
+        weapons=weapons,
+        targets=targets,
+        target_values=target_values,
+        destruction_probabilities=destruction_probabilities,
+    ), mu
+
+
 def load_instance_from_file(filepath: str | Path, is_survival_prob: bool = True) -> WTAInstance:
     """Helper to load WTA instances from a text file. The file format is expected to be:
 N

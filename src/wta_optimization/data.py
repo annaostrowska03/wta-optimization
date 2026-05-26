@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from random import Random
 from pathlib import Path
+from random import Random
 
 from .models import WTAInstance
 
@@ -14,9 +14,7 @@ def generate_random_instance(
     destruction_probability_range: tuple[float, float] = (0.1, 0.9),
 ) -> WTAInstance:
     rng = Random(seed)
-    target_values = tuple(
-        rng.uniform(*target_value_range) for _ in range(targets)
-    )
+    target_values = tuple(rng.uniform(*target_value_range) for _ in range(targets))
     destruction_probabilities = tuple(
         tuple(rng.uniform(*destruction_probability_range) for _ in range(targets))
         for _ in range(weapons)
@@ -29,25 +27,27 @@ def generate_random_instance(
     )
 
 
-def load_instance_from_file(filepath: str | Path, is_survival_prob: bool = True) -> WTAInstance:
+def load_instance_from_file(
+    filepath: str | Path, is_survival_prob: bool = True
+) -> WTAInstance:
     """Helper to load WTA instances from a text file. The file format is expected to be:
-N
-V_1
-...
-V_N
-q_11 q_12 ... q_1N
-...
-q_N1 q_N2 ... q_NN"""
+    N
+    V_1
+    ...
+    V_N
+    q_11 q_12 ... q_1N
+    ...
+    q_N1 q_N2 ... q_NN"""
     path = Path(filepath)
-    with open(path, 'r') as f:
+    with open(path, "r") as f:
         lines = [line.strip() for line in f if line.strip()]
-        
+
     N = int(lines[0])
-    
-    target_values = tuple(float(x) for x in lines[1:N+1])
-    
-    probs_flat = [float(x) for x in lines[N+1:]]
-    
+
+    target_values = tuple(float(x) for x in lines[1 : N + 1])
+
+    probs_flat = [float(x) for x in lines[N + 1 :]]
+
     destruction_probabilities = []
     idx = 0
     for i in range(N):
@@ -60,7 +60,7 @@ q_N1 q_N2 ... q_NN"""
             else:
                 row.append(val)
         destruction_probabilities.append(tuple(row))
-        
+
     return WTAInstance(
         weapons=N,
         targets=N,

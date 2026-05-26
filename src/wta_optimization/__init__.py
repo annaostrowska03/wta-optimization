@@ -1,9 +1,10 @@
 """Static Weapon Target Allocation optimization tools."""
 
 from .data import generate_random_instance
-from .exact import solve_exact, solve_branch_and_adjust
-from .heuristic import solve_greedy, solve_local_search, solve_simulated_annealing
-from .models import WTASolution, WTAInstance
+from .exact import solve_branch_and_adjust, solve_exact
+from .heuristic import (solve_greedy, solve_local_search,
+                        solve_simulated_annealing)
+from .models import WTAInstance, WTASolution
 
 __all__ = [
     "WTAInstance",

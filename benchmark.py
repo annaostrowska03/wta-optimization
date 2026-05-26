@@ -6,15 +6,12 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-from wta_optimization.data import generate_random_instance, load_instance_from_file
-from wta_optimization.exact import solve_exact, solve_branch_and_adjust
-from wta_optimization.heuristic import (
-    solve_greedy,
-    solve_local_search,
-    solve_simulated_annealing,
-)
+from wta_optimization.data import (generate_random_instance,
+                                   load_instance_from_file)
+from wta_optimization.exact import solve_branch_and_adjust, solve_exact
+from wta_optimization.heuristic import (solve_greedy, solve_local_search,
+                                        solve_simulated_annealing)
 from wta_optimization.models import WTAInstance, WTASolution
-
 
 METHOD_SPECS = [
     ("greedy", "Greedy", "tab:orange"),
@@ -68,7 +65,9 @@ def _gap_pct(candidate_obj: float, reference_obj: float) -> float:
     return max(0.0, (candidate_obj - reference_obj) / base_obj * 100)
 
 
-def _build_result_row(prefix_data: dict[str, int | str], solutions: dict[str, WTASolution]) -> dict[str, int | str | float]:
+def _build_result_row(
+    prefix_data: dict[str, int | str], solutions: dict[str, WTASolution]
+) -> dict[str, int | str | float]:
     exact_obj = solutions["exact"].objective_value
     row: dict[str, int | str | float] = dict(prefix_data)
     for method_key, _, _ in METHOD_SPECS:
@@ -77,7 +76,9 @@ def _build_result_row(prefix_data: dict[str, int | str], solutions: dict[str, WT
         row[f"{method_key}_obj"] = solution.objective_value
         row[f"{method_key}_status"] = solution.status
         if method_key != "exact":
-            row[f"optimality_gap_pct_{method_key}"] = _gap_pct(solution.objective_value, exact_obj)
+            row[f"optimality_gap_pct_{method_key}"] = _gap_pct(
+                solution.objective_value, exact_obj
+            )
     return row
 
 
@@ -90,11 +91,7 @@ def _aggregate_for_plot(df: pd.DataFrame, from_file: bool) -> pd.DataFrame:
         for column in df.columns
         if column != "seed" and pd.api.types.is_numeric_dtype(df[column])
     ]
-    aggregation = {
-        column: "mean"
-        for column in numeric_columns
-        if column != "size"
-    }
+    aggregation = {column: "mean" for column in numeric_columns if column != "size"}
     return df.groupby("size", as_index=False).agg(aggregation)
 
 
@@ -113,7 +110,10 @@ def _to_tradeoff_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _target_loads(solution: WTASolution) -> list[int]:
-    return [sum(row[target_index] for row in solution.assignment) for target_index in range(len(solution.assignment[0]))]
+    return [
+        sum(row[target_index] for row in solution.assignment)
+        for target_index in range(len(solution.assignment[0]))
+    ]
 
 
 def _solve_and_record_sensitivity(
@@ -143,11 +143,19 @@ def _solve_and_record_sensitivity(
                 "method": label,
                 "runtime_s": solution.runtime_seconds,
                 "objective_value": solution.objective_value,
-                "optimality_gap_pct": 0.0 if method_key == "exact" else _gap_pct(solution.objective_value, exact_obj),
+                "optimality_gap_pct": (
+                    0.0
+                    if method_key == "exact"
+                    else _gap_pct(solution.objective_value, exact_obj)
+                ),
                 "primary_focus_label": primary_focus_label,
                 "primary_focus_allocations": target_loads[primary_focus_target],
                 "secondary_focus_label": secondary_focus_label or "",
-                "secondary_focus_allocations": target_loads[secondary_focus_target] if secondary_focus_target is not None else 0,
+                "secondary_focus_allocations": (
+                    target_loads[secondary_focus_target]
+                    if secondary_focus_target is not None
+                    else 0
+                ),
                 "allocation_profile": ",".join(str(value) for value in target_loads),
             }
         )
@@ -170,8 +178,12 @@ def run_benchmark(
         files = sorted(dir_path.glob("*.txt"), key=_numeric_file_sort_key)
 
         print("Starting WTA Optimization Benchmark (From Files)...")
-        print(f"Exact MIP time limit per instance: {exact_time_limit_seconds / 3600:.1f} h")
-        print(f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
+        print(
+            f"Exact MIP time limit per instance: {exact_time_limit_seconds / 3600:.1f} h"
+        )
+        print(
+            f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}"
+        )
         print(
             f"{'File':<20} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | "
             f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8} | {'Exact Status':<12}"
@@ -208,7 +220,9 @@ def run_benchmark(
 
     print("Starting WTA Optimization Benchmark (Extended)...")
     print(f"Exact MIP time limit per instance: {exact_time_limit_seconds / 3600:.1f} h")
-    print(f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}")
+    print(
+        f"Exact MIP warm start from greedy: {'yes' if use_exact_warm_start else 'no'}"
+    )
     print(
         f"{'Size':<5} | {'Seed':<4} | {'Exact Time':<10} | {'Greedy T':<10} | {'LS Time':<10} | "
         f"{'SA Time':<10} | {'Gr Gap%':<8} | {'LS Gap%':<8} | {'SA Gap%':<8} | {'Exact Status':<12}"
@@ -246,12 +260,20 @@ def plot_results(df: pd.DataFrame, from_file: bool = False) -> None:
     output_dir = Path("results")
     plot_df = _aggregate_for_plot(df, from_file=from_file)
     x_col = "file" if from_file else "size"
-    x_label = "Input File" if from_file else "Problem Size (Number of Weapons and Targets)"
-    time_title = "Execution Time Comparison" if from_file else "Execution Time Comparison (Log Scale)"
+    x_label = (
+        "Input File" if from_file else "Problem Size (Number of Weapons and Targets)"
+    )
+    time_title = (
+        "Execution Time Comparison"
+        if from_file
+        else "Execution Time Comparison (Log Scale)"
+    )
 
     plt.figure(figsize=(11, 6))
     for method_key, label, _ in METHOD_SPECS:
-        plt.plot(plot_df[x_col], plot_df[f"{method_key}_time_s"], marker="o", label=label)
+        plt.plot(
+            plot_df[x_col], plot_df[f"{method_key}_time_s"], marker="o", label=label
+        )
     if not from_file:
         plt.yscale("log")
     plt.title(time_title)
@@ -261,14 +283,24 @@ def plot_results(df: pd.DataFrame, from_file: bool = False) -> None:
     if from_file:
         plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
-    plt.savefig(output_dir / ("time_comparison_from_files.png" if from_file else "time_comparison.png"), dpi=300)
+    plt.savefig(
+        output_dir
+        / ("time_comparison_from_files.png" if from_file else "time_comparison.png"),
+        dpi=300,
+    )
     plt.close()
 
     plt.figure(figsize=(11, 6))
     for method_key, label, color in METHOD_SPECS:
         if method_key == "exact":
             continue
-        plt.plot(plot_df[x_col], plot_df[f"optimality_gap_pct_{method_key}"], marker="o", color=color, label=f"{label} Gap %")
+        plt.plot(
+            plot_df[x_col],
+            plot_df[f"optimality_gap_pct_{method_key}"],
+            marker="o",
+            color=color,
+            label=f"{label} Gap %",
+        )
     plt.title("Optimality Gap Compared To Exact Solution")
     plt.xlabel(x_label)
     plt.ylabel("Optimality Gap (%)")
@@ -276,7 +308,11 @@ def plot_results(df: pd.DataFrame, from_file: bool = False) -> None:
     if from_file:
         plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
-    plt.savefig(output_dir / ("optimality_gap_from_files.png" if from_file else "optimality_gap.png"), dpi=300)
+    plt.savefig(
+        output_dir
+        / ("optimality_gap_from_files.png" if from_file else "optimality_gap.png"),
+        dpi=300,
+    )
     plt.close()
 
     print(f"Plots saved to {output_dir}/")
@@ -290,15 +326,26 @@ def plot_tradeoff(df: pd.DataFrame, from_file: bool = False) -> None:
     plt.figure(figsize=(9, 6))
     for row in tradeoff_df.itertuples():
         plt.scatter(row.runtime_s, row.objective_value, s=120, color=row.color)
-        plt.annotate(row.method, (row.runtime_s, row.objective_value), textcoords="offset points", xytext=(8, 6))
+        plt.annotate(
+            row.method,
+            (row.runtime_s, row.objective_value),
+            textcoords="offset points",
+            xytext=(8, 6),
+        )
     plt.title("Time vs Objective Trade-off")
     plt.xlabel("Average Runtime (seconds)")
     plt.ylabel("Average Objective Value")
     plt.tight_layout()
-    plt.savefig(output_dir / ("tradeoff_curve_from_files.png" if from_file else "tradeoff_curve.png"), dpi=300)
+    plt.savefig(
+        output_dir
+        / ("tradeoff_curve_from_files.png" if from_file else "tradeoff_curve.png"),
+        dpi=300,
+    )
     plt.close()
 
-    csv_path = output_dir / ("tradeoff_curve_from_files.csv" if from_file else "tradeoff_curve.csv")
+    csv_path = output_dir / (
+        "tradeoff_curve_from_files.csv" if from_file else "tradeoff_curve.csv"
+    )
     tradeoff_df.drop(columns=["color"]).to_csv(csv_path, index=False)
     print(f"Trade-off summary saved to {csv_path}")
 
@@ -313,7 +360,9 @@ def run_warm_start_study(
     results = []
 
     print("\nStarting Warm Start Study...")
-    print(f"{'Size':<5} | {'Seed':<4} | {'Cold MIP':<10} | {'Warm MIP':<10} | {'Speedup':<8}")
+    print(
+        f"{'Size':<5} | {'Seed':<4} | {'Cold MIP':<10} | {'Warm MIP':<10} | {'Speedup':<8}"
+    )
 
     for size in sizes:
         for seed in seeds:
@@ -331,7 +380,9 @@ def run_warm_start_study(
                 time_limit_seconds=exact_time_limit_seconds,
             )
 
-            speedup = cold_solution.runtime_seconds / max(warm_solution.runtime_seconds, 1e-9)
+            speedup = cold_solution.runtime_seconds / max(
+                warm_solution.runtime_seconds, 1e-9
+            )
             results.append(
                 {
                     "size": size,
@@ -344,7 +395,9 @@ def run_warm_start_study(
                     "exact_cold_status": cold_solution.status,
                     "exact_warm_status": warm_solution.status,
                     "speedup_ratio": speedup,
-                    "warm_start_gap_pct": _gap_pct(greedy_solution.objective_value, cold_solution.objective_value),
+                    "warm_start_gap_pct": _gap_pct(
+                        greedy_solution.objective_value, cold_solution.objective_value
+                    ),
                 }
             )
 
@@ -372,8 +425,18 @@ def plot_warm_start_study(df: pd.DataFrame) -> None:
     )
 
     plt.figure(figsize=(10, 6))
-    plt.plot(plot_df["size"], plot_df["exact_cold_time_s"], marker="o", label="Exact MIP (cold start)")
-    plt.plot(plot_df["size"], plot_df["exact_warm_time_s"], marker="o", label="Exact MIP (warm start)")
+    plt.plot(
+        plot_df["size"],
+        plot_df["exact_cold_time_s"],
+        marker="o",
+        label="Exact MIP (cold start)",
+    )
+    plt.plot(
+        plot_df["size"],
+        plot_df["exact_warm_time_s"],
+        marker="o",
+        label="Exact MIP (warm start)",
+    )
     plt.title("Warm Start Impact on Solver Runtime")
     plt.xlabel("Problem Size")
     plt.ylabel("Average Runtime (seconds)")
@@ -480,7 +543,12 @@ def plot_sensitivity_analysis(df: pd.DataFrame) -> None:
     secondary_df = df[df["secondary_focus_label"] != ""]
     if not secondary_df.empty:
         plt.figure(figsize=(11, 6))
-        sns.barplot(data=secondary_df, x="scenario", y="secondary_focus_allocations", hue="method")
+        sns.barplot(
+            data=secondary_df,
+            x="scenario",
+            y="secondary_focus_allocations",
+            hue="method",
+        )
         plt.title("Sensitivity Analysis: Allocation to Secondary Focus Target")
         plt.xlabel("")
         plt.ylabel("Assigned Weapons")
@@ -490,7 +558,9 @@ def plot_sensitivity_analysis(df: pd.DataFrame) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run WTA optimization benchmarks and analyses.")
+    parser = argparse.ArgumentParser(
+        description="Run WTA optimization benchmarks and analyses."
+    )
     parser.add_argument(
         "--mode",
         choices=["files", "random", "warm", "sensitivity", "all"],
@@ -533,7 +603,9 @@ def main() -> None:
         plot_tradeoff(df_results)
 
     if args.mode in {"warm", "all"}:
-        warm_start_df = run_warm_start_study(exact_time_limit_seconds=args.exact_limit_seconds)
+        warm_start_df = run_warm_start_study(
+            exact_time_limit_seconds=args.exact_limit_seconds
+        )
         plot_warm_start_study(warm_start_df)
 
     if args.mode in {"sensitivity", "all"}:

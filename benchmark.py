@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-from wta_optimization.data import generate_random_instance, load_instance_from_file
+from wta_optimization.data import generate_random_instance, load_instance_from_file, load_andersen_instance
 from wta_optimization.exact import solve_exact, solve_branch_and_adjust
 from wta_optimization.heuristic import (
     solve_greedy,
@@ -489,11 +489,120 @@ def plot_sensitivity_analysis(df: pd.DataFrame) -> None:
         plt.close()
 
 
+def run_andersen_benchmark(
+    data_dir: str | Path = "data/data_andersen",
+    exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
+    use_exact_warm_start: bool = True,
+    methods: str = "both",  # "exact", "bna", or "both"
+    bna_delta: float = 1e-5,  # Andersen Table 5 uses delta=0.00001
+) -> pd.DataFrame:
+    """Run solve_exact and/or solve_branch_and_adjust on all Andersen instance files.
+
+    Files are expected in the format  wta_{W}x{T}x{seed}.txt  inside data_dir.
+    Results are saved to results/benchmark_andersen.csv after every file.
+    """
+    data_dir = Path(data_dir)
+    files = sorted(
+        data_dir.glob("wta_*.txt"),
+        key=lambda p: [int(x) for x in re.findall(r"\d+", p.stem)],
+    )
+    if not files:
+        raise FileNotFoundError(f"No wta_*.txt files found in {data_dir}")
+
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    csv_path = output_dir / "benchmark_andersen.csv"
+
+    if csv_path.exists():
+        existing_df = pd.read_csv(csv_path)
+        results = existing_df.to_dict("records")
+        done = {r["file"] for r in results if "error" not in r or pd.isna(r.get("error"))}
+        print(f"Resuming — {len(done)} existing rows loaded from {csv_path}")
+    else:
+        results = []
+        done: set[str] = set()
+
+    print(f"Andersen benchmark — {len(files)} files, time limit {exact_time_limit_seconds:.0f}s")
+    print(f"{'File':<22} | {'W':>4} | {'T':>4} | {'mu':>3} | {'Exact T':>9} | {'BnA T':>9} | {'Exact Obj':>11} | {'BnA Obj':>11}")
+
+    for filepath in files:
+        fname = filepath.name
+        if fname in done:
+            print(f"{fname:<22} | (skipped — already done)")
+            continue
+
+        # Parse W, T, mu from filename  wta_{W}x{T}x{mu}.txt
+        nums = [int(x) for x in re.findall(r"\d+", filepath.stem)]
+        weapons, targets, mu = nums[0], nums[1], nums[2]
+
+        try:
+            instance, mu = load_andersen_instance(filepath)
+            mu_list = [mu] * instance.weapons
+
+            sol_greedy = solve_greedy(instance) if use_exact_warm_start else None
+            warm = sol_greedy if use_exact_warm_start else None
+
+            run_exact = methods in ("exact", "both")
+            run_bna = methods in ("bna", "both")
+
+            sol_exact = (
+                solve_exact(
+                    instance,
+                    num_piecewise_segments=20,
+                    warm_start=warm,
+                    time_limit_seconds=exact_time_limit_seconds,
+                )
+                if run_exact
+                else None
+            )
+            sol_bna = (
+                solve_branch_and_adjust(
+                    instance,
+                    delta=bna_delta,
+                    warm_start=warm,
+                    time_limit_seconds=exact_time_limit_seconds,
+                    mu=mu_list,
+                )
+                if run_bna
+                else None
+            )
+
+            row = {
+                "file": fname,
+                "weapons": weapons,
+                "targets": targets,
+                "mu": mu,
+                "exact_time_s": sol_exact.runtime_seconds if sol_exact else float("nan"),
+                "bna_time_s": sol_bna.runtime_seconds if sol_bna else float("nan"),
+                "exact_obj": sol_exact.objective_value if sol_exact else float("nan"),
+                "bna_obj": sol_bna.objective_value if sol_bna else float("nan"),
+                "exact_status": sol_exact.status if sol_exact else "skipped",
+                "bna_status": sol_bna.status if sol_bna else "skipped",
+            }
+            results.append(row)
+
+            exact_t = f"{sol_exact.runtime_seconds:>9.2f}" if sol_exact else f"{'---':>9}"
+            bna_t = f"{sol_bna.runtime_seconds:>9.2f}" if sol_bna else f"{'---':>9}"
+            exact_o = f"{sol_exact.objective_value:>11.4f}" if sol_exact else f"{'---':>11}"
+            bna_o = f"{sol_bna.objective_value:>11.4f}" if sol_bna else f"{'---':>11}"
+            print(f"{fname:<22} | {weapons:>4} | {targets:>4} | {mu:>3} | {exact_t} | {bna_t} | {exact_o} | {bna_o}")
+        except Exception as exc:
+            print(f"{fname:<22} | ERROR: {exc}")
+            results.append({"file": fname, "weapons": weapons, "targets": targets, "mu": mu, "error": str(exc)})
+
+        pd.DataFrame(results).to_csv(csv_path, index=False)
+
+    df = pd.DataFrame(results)
+    df.to_csv(csv_path, index=False)
+    print(f"\nResults saved to {csv_path}")
+    return df
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run WTA optimization benchmarks and analyses.")
     parser.add_argument(
         "--mode",
-        choices=["files", "random", "warm", "sensitivity", "all"],
+        choices=["files", "random", "warm", "sensitivity", "andersen", "all"],
         default="files",
         help="Select which analysis to run. Default: files.",
     )
@@ -507,6 +616,18 @@ def _parse_args() -> argparse.Namespace:
         "--no-exact-warm-start",
         action="store_true",
         help="Disable warm start from the greedy heuristic for exact benchmark solves.",
+    )
+    parser.add_argument(
+        "--andersen-methods",
+        choices=["exact", "bna", "both"],
+        default="both",
+        help="Which methods to run in andersen mode. Default: both.",
+    )
+    parser.add_argument(
+        "--bna-delta",
+        type=float,
+        default=1e-5,
+        help="Approximation parameter delta for Branch-and-Adjust. Andersen Table 5 uses 0.00001 (default).",
     )
     return parser.parse_args()
 
@@ -542,6 +663,14 @@ def main() -> None:
             use_exact_warm_start=use_exact_warm_start,
         )
         plot_sensitivity_analysis(sensitivity_df)
+
+    if args.mode == "andersen":
+        run_andersen_benchmark(
+            exact_time_limit_seconds=args.exact_limit_seconds,
+            use_exact_warm_start=use_exact_warm_start,
+            methods=args.andersen_methods,
+            bna_delta=args.bna_delta,
+        )
 
 
 if __name__ == "__main__":

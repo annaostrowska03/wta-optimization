@@ -7,7 +7,7 @@ import pandas as pd
 import seaborn as sns
 
 from wta_optimization.data import generate_random_instance, load_instance_from_file
-from wta_optimization.exact import solve_exact
+from wta_optimization.exact import solve_exact, solve_branch_and_adjust
 from wta_optimization.heuristic import (
     solve_greedy,
     solve_local_search,
@@ -20,7 +20,8 @@ METHOD_SPECS = [
     ("greedy", "Greedy", "tab:orange"),
     ("ls", "Greedy + Local Search", "tab:blue"),
     ("sa", "Simulated Annealing", "tab:green"),
-    ("exact", "Exact MIP", "black"),
+    ("exact", "Exact MIP (PuLP)", "black"),
+    ("bna", "Branch & Adjust (Gurobi)", "tab:red"),
 ]
 
 EXACT_TIME_LIMIT_SECONDS = 5400.0
@@ -46,11 +47,19 @@ def _evaluate_methods(
         warm_start=sol_greedy if use_exact_warm_start else None,
         time_limit_seconds=exact_time_limit_seconds,
     )
+
+    sol_bna = solve_branch_and_adjust(
+        instance,
+        warm_start=sol_greedy if use_exact_warm_start else None,
+        time_limit_seconds=exact_time_limit_seconds,
+    )
+
     return {
         "greedy": sol_greedy,
         "ls": sol_ls,
         "sa": sol_sa,
         "exact": sol_exact,
+        "bna": sol_bna,
     }
 
 

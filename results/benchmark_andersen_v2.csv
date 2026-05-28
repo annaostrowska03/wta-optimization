@@ -1,0 +1,4 @@
+file,weapons,targets,mu,exact_time_s,bna_time_s,exact_obj,bna_obj,exact_status,bna_status
+wta_50x100x1.txt,50,100,1,,117.1531325999822,,1734.302278167934,skipped,optimal
+wta_50x100x2.txt,50,100,2,,124.26309079999919,,123.8384583301924,skipped,optimal
+wta_50x100x3.txt,50,100,3,,92.10836709997966,,20.590016186212733,skipped,optimal

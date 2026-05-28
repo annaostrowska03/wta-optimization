@@ -226,16 +226,8 @@ def solve_branch_and_adjust_v2(
                     )
                 )
 
-                # INJECTION: when true_obj improves, push (x*, lbda*, z*=T*)
-                # into the B&B tree so Gurobi records T* as the incumbent.
-                #
-                # Feasibility of the injected solution:
-                #   x* : satisfies integer & weapon constraints           
-                #   lbda* : interpolated on breakpoints for y_j*          
-                #   z*[j] = T*_j >= L*_j (= LP under-approx at y_j*)    
-                #   Objective = sum_j T*_j = T*                           
-                #
-                # This mirrors Andersen's HeuristicCallback.setSolution(T*).
+
+                # If new best, inject (x*, lbda*, z*=T*) as incumbent
 
                 if true_obj < cb_model._best_true_obj - 1e-9:
                     cb_model._best_true_obj  = true_obj
@@ -243,7 +235,7 @@ def solve_branch_and_adjust_v2(
                         tuple(row) for row in current_assignment
                     )
 
-                    # Compute lbda* by interpolating y_j* on the breakpoints
+                    # Interpolate lbda* for breakpoints
                     lbda_star_dict: dict[tuple[int, int], float] = {}
                     for j in range(cb_model._instance.targets):
                         weights = _lbda_from_log_survival(

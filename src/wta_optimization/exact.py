@@ -11,16 +11,9 @@ from scipy.optimize import broyden1
 
 from .models import WTAInstance, WTASolution, objective_value
 
-# ---------------------------------------------------------------------------
-# Numeric constants
-# ---------------------------------------------------------------------------
 _EPS = 1e-10
 _MIN_EXP = 1e-320
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _normalize_warm_start(
         instance: WTAInstance,
@@ -120,10 +113,6 @@ def _compute_breakpoints(
     return b_list
 
 
-# ---------------------------------------------------------------------------
-# Solver 1: WTA_A (upper approximation, section 3) — uses PuLP/CBC
-# ---------------------------------------------------------------------------
-
 def solve_exact(
         instance: WTAInstance,
         num_piecewise_segments: int = 20,
@@ -202,10 +191,6 @@ def solve_exact(
         status=solver_status,
     )
 
-
-# ---------------------------------------------------------------------------
-# Solver 2: Branch-and-Adjust (WTA_LA, Section 6 of Andersen) — uses Gurobi
-# ---------------------------------------------------------------------------
 
 def _resolve_mu(
         instance: WTAInstance,
@@ -352,9 +337,7 @@ def solve_branch_and_adjust(
             if time_limit_seconds is not None:
                 model.Params.TimeLimit = time_limit_seconds
 
-            # --------------------------------------------------------------
             # Decision variables x[i,j]
-            # --------------------------------------------------------------
             x: dict[tuple[int, int], gp.Var] = {}
             x_keys: list[tuple[int, int]] = []
             x_vars: list[gp.Var] = []
@@ -381,17 +364,13 @@ def solve_branch_and_adjust(
                     name=f"weapon_availability_{i}",
                 )
 
-            # --------------------------------------------------------------
             # Delta-based breakpoints per target.
             # b[j,0] = log(prod_i (1-p_ij)^mu_i), final breakpoint = 0.
-            # --------------------------------------------------------------
             B: list[list[float]] = []
             for j in range(targets):
                 B.append(_compute_breakpoints(instance.destruction_probabilities, mu_values, j, delta))
 
-            # --------------------------------------------------------------
             # Lambda and z variables for compact convex under-approximation.
-            # --------------------------------------------------------------
             lbda: dict[tuple[int, int], gp.Var] = {}
             for j in range(targets):
                 for t in range(len(B[j])):
@@ -449,9 +428,7 @@ def solve_branch_and_adjust(
                     for j in range(targets):
                         x[i, j].Start = warm_start_assignment[i][j]
 
-            # --------------------------------------------------------------
             # Callback state.
-            # --------------------------------------------------------------
             model._x = x
             model._x_keys = x_keys
             model._x_vars = x_vars

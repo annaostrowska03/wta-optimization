@@ -7,7 +7,6 @@ import pandas as pd
 from wta_optimization.data import load_andersen_instance
 from wta_optimization.exact import solve_branch_and_adjust
 from wta_optimization.exact_v2 import solve_branch_and_adjust_v2
-from wta_optimization.models import WTAInstance, WTASolution
 
 DEFAULT_TIME_LIMIT = 7200.0
 
@@ -96,6 +95,7 @@ def run_andersen_benchmark(
 
 
 def _parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the Andersen benchmark script."""
     parser = argparse.ArgumentParser(
         description="Benchmark Branch-and-Adjust on Andersen et al. (2022) instances."
     )
@@ -126,6 +126,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Entry point — parse arguments and run the benchmark."""
     args = _parse_args()
     run_andersen_benchmark(
         data_dir=args.data_dir,

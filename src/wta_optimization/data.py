@@ -13,6 +13,7 @@ def generate_random_instance(
     target_value_range: tuple[float, float] = (1.0, 10.0),
     destruction_probability_range: tuple[float, float] = (0.1, 0.9),
 ) -> WTAInstance:
+    """Generate a random WTA instance with uniform target values and destruction probabilities."""
     rng = Random(seed)
     target_values = tuple(
         rng.uniform(*target_value_range) for _ in range(targets)

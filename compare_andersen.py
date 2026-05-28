@@ -12,7 +12,6 @@ import matplotlib.ticker as mticker
 import numpy as np
 from pathlib import Path
 from matplotlib.patches import Patch
-from matplotlib.lines import Line2D
 
 ROOT       = Path(__file__).parent
 ANDERSEN_R = ROOT / "data" / "results.csv"
@@ -21,6 +20,7 @@ OUT_DIR    = ROOT / "results"
 
 # Load Andersen reference data
 def load_andersen_ref(path: Path) -> pd.DataFrame:
+    """Parse Andersen et al. (2022) reference CSV for the BnA δ=0.00001 section."""
     rows = []
     in_section = False
     with open(path, encoding="utf-8") as f:
@@ -128,8 +128,10 @@ ax1.plot(lim, lim, "k--", lw=1, alpha=0.5, label="equal time")
 ax1.axhline(7200, color="gray", lw=1, ls=":", alpha=0.7, label="7200 s limit")
 ax1.axvline(7200, color="gray", lw=1, ls=":", alpha=0.7)
 
-ax1.set_xscale("log"); ax1.set_yscale("log")
-ax1.set_xlim(lim); ax1.set_ylim(lim)
+ax1.set_xscale("log")
+ax1.set_yscale("log")
+ax1.set_xlim(lim)
+ax1.set_ylim(lim)
 ax1.set_xlabel("Andersen time [s]", fontsize=11)
 ax1.set_ylabel("Our time [s]", fontsize=11)
 ax1.set_title("Runtime comparison", fontsize=11)

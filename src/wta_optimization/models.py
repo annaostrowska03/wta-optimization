@@ -6,6 +6,8 @@ from typing import Sequence
 
 @dataclass(frozen=True)
 class WTAInstance:
+    """Immutable data class representing a WTA problem instance."""
+
     weapons: int
     targets: int
     target_values: tuple[float, ...]
@@ -28,6 +30,8 @@ class WTAInstance:
 
 @dataclass(frozen=True)
 class WTASolution:
+    """Immutable data class representing a WTA solution with solver metadata."""
+
     assignment: tuple[tuple[int, ...], ...]
     objective_value: float
     runtime_seconds: float = 0.0
@@ -36,6 +40,7 @@ class WTASolution:
 
     @property
     def assigned_pairs(self) -> list[tuple[int, int]]:
+        """Return all (weapon, target) index pairs with a positive assignment."""
         return [
             (weapon_index, target_index)
             for weapon_index, row in enumerate(self.assignment)
@@ -48,6 +53,7 @@ def objective_value(
     instance: WTAInstance,
     assignment: Sequence[Sequence[int]],
 ) -> float:
+    """Compute total expected survived target value for a given assignment."""
     survival = 0.0
     for target_index, target_value in enumerate(instance.target_values):
         target_survival = target_value

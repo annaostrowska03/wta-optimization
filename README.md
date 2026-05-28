@@ -1,14 +1,70 @@
-# Weapon Target Allocation (WTA) Optimizer
+﻿# Weapon Target Assignment (WTA) — Branch-and-Adjust
 
-This repository contains a comparative study of **Exact Mixed-Integer Programming (MIP)** formulations and **Fast Heuristic algorithms** for solving the Static Weapon Target Allocation (WTA) problem. 
+Implementation and empirical comparison of the **Branch-and-Adjust (BnA)** algorithm for the static Weapon-Target Assignment problem, based on Andersen et al. (2022).
 
-The Static WTA problem is a classic NP-hard combinatorial optimization challenge. The core objective of this project is to analyze the fundamental trade-off between guaranteed mathematical optimality and computational feasibility, especially for large-scale, real-time systems where execution time is critical.
+## Problem
 
+Static WTA is a nonlinear integer program: assign weapons to targets to minimise the total expected survival value of all targets.
 
-## Methodology
+$$\min \sum_{j} v_j \prod_{i} (1 - p_{ij})^{x_{ij}}$$
 
-1. **Exact Approach:** Minimizes the expected survival value of targets using a strict mathematical formulation. To bypass the non-linear product terms (which cause standard solvers to fail), the model implements a logarithmic transformation trick.
-2. **Heuristic Approach:** Prioritizes real-time execution by iteratively allocating the most effective weapons to the highest-value targets, optionally refined by local search to escape local minima.
+subject to $\sum_j x_{ij} \le \mu_i$ (weapon availability) and $x_{ij} \in \mathbb{Z}_{\ge 0}$.
+
+## Branch-and-Adjust Algorithm
+
+BnA linearises the nonlinear objective using a piecewise-linear lower approximation controlled by the parameter $\delta$. Whenever Gurobi finds an integer solution $x^*$, the MIPSOL callback:
+
+1. Computes the true nonlinear cost $T^*_j$ for each target.
+2. Adds **tangent lazy cuts** $z_j \ge c_j(1 + y_j - y_j^*)$ (globally valid lower bounds on $\exp$) that force the LP relaxation to converge to $T^*$.
+3. *(v2 only)* Injects the corrected incumbent $(x^*, z^*_j = T^*_j)$ via `cbSetSolution` so Gurobi records $T^*$ immediately as the upper bound.
+
+## Implementations
+
+| File | Function | Mechanism | Speed |
+|---|---|---|---|
+| `exact.py` | `solve_branch_and_adjust` | tangent cuts only | baseline |
+| `exact_v2.py` | `solve_branch_and_adjust_v2` | tangent cuts + `cbSetSolution` | ~2–3× faster |
+
+`exact_v2.py` is recommended. Both produce correct results.
+
+## Usage
+
+```bash
+# Run benchmark on all 30 Andersen instances (delta=1e-5, 7200 s limit)
+python benchmark.py --method bna_v2
+
+# Compare results against Andersen et al. (2022) Table 5
+python compare_andersen.py
+```
+
+CLI options for `benchmark.py`:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--method` | `bna` | `bna` (exact.py) or `bna_v2` (exact_v2.py) |
+| `--time-limit` | `7200` | Per-instance time limit in seconds |
+| `--delta` | `1e-5` | Approximation parameter δ |
+| `--data-dir` | `data/data_andersen` | Directory with instance files |
+
+## Data
+
+Instance files (`wta_{W}x{T}x{mu}.txt`) from the [Andersen et al. (2022) Mendeley dataset](https://data.mendeley.com/datasets/jt2ppwr62p/2). Sizes range from 50×100 to 500×1000 (weapons × targets), with μ ∈ {1, 2, 3}.
+
+Andersen et al. reference results are in `data/results.csv`.
+
+## Project structure
+
+```
+src/wta_optimization/
+    models.py          — WTAInstance, WTASolution dataclasses
+    data.py            — instance loaders (Andersen format + random)
+    exact.py           — BnA v1 (tangent cuts)
+    exact_v2.py        — BnA v2 (tangent cuts + cbSetSolution injection)
+benchmark.py           — CLI benchmark runner (resume-capable)
+compare_andersen.py    — comparison vs Andersen et al. Table 5
+data/data_andersen/    — 30 benchmark instances
+results/               — benchmark CSVs and comparison plots
+```
 
 ## Team
 
@@ -17,45 +73,4 @@ The Static WTA problem is a classic NP-hard combinatorial optimization challenge
 * [Norbert Frydrysiak](https://github.com/fantasy2fry)
 
 ---
-*Developed as a course project for Optimization in Data Analysis @ WUT.
-
-## Branch-and-Adjust implementations
-
-The repository contains two implementations of the Branch-and-Adjust (BnA) algorithm from Andersen et al. (2022), both in `src/wta_optimization/`:
-
-### `exact.py` — `solve_branch_and_adjust`
-
-Baseline implementation. Uses a MIP model with:
-- `x[i,j]` integer decision variables
-- `lbda[j,t]` weights for piecewise-linear under-approximation of the nonlinear objective
-- `z[j]` variables in the objective, bounded below by the LP under-approximation
-
-When Gurobi finds an integer solution `x*` with LP value `L*` (under-estimate of the true cost `T*`), the callback adds **tangent lazy cuts**:
-
-$$z_j \geq c_j (1 + y_j - y_j^*)$$
-
-where $c_j = w_j e^{y_j^*}$ is the true target cost at `x*` and $y_j = \sum_i \log(1-p_{ij}) x_{ij}$.  
-These cuts are globally valid (tangent to exp is a lower bound everywhere) and force the LP to reject the current solution until `z[j]` converges to `T*`.
-
-### `exact_v2.py` — `solve_branch_and_adjust_v2`
-
-Improved implementation — closer to Andersen's original CPLEX mechanism. Same model as above, with one addition in the callback:
-
-When a new best `x*` is found, a corrected incumbent is **injected via `cbSetSolution`** with `z*[j] = T*_j` (true nonlinear cost) instead of the LP under-approximation `L*_j`. Since `z[j] >= under_approx` is a lower bound and `T*_j >= L*_j`, the injected solution is feasible — Gurobi immediately records `T*` as the incumbent upper bound.
-
-This mirrors Andersen's CPLEX approach:
-- `IncumbentCallback.reject()` → prevents `L*` from becoming the incumbent
-- `HeuristicCallback.setSolution(T*)` → injects the true value as the upper bound
-
-| | `exact.py` | `exact_v2.py` |
-|---|---|---|
-| Gurobi learns T* via | tangent cuts (iterative) | `cbSetSolution` (immediate) |
-| Upper bound available from | 2nd visit to x* | 1st visit to x* |
-| Pruning efficiency | lower | higher |
-| Speed (50×100, μ=2) | ~254s | ~78s (~3× faster) |
-
-Both produce correct results. `exact_v2.py` is recommended for benchmarking.
-
-## Data
-
-The benchmark tests in this repository include experiments run using the dataset published on Mendeley Data: https://data.mendeley.com/datasets/jt2ppwr62p/2
+*Developed as a course project for Optimization in Data Analysis @ WUT.*

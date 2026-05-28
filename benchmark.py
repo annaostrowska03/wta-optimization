@@ -16,6 +16,8 @@ def run_andersen_benchmark(
     time_limit_seconds: float = DEFAULT_TIME_LIMIT,
     method: str = "bna",  # "bna" or "bna_v2"
     bna_delta: float = 1e-5,
+    files: list[str] | None = None,
+    results_file: str | None = None,
 ) -> pd.DataFrame:
     """Run BnA (exact.py) or BnA-v2 (exact_v2.py) on all 30 Andersen instance files.
 
@@ -24,21 +26,38 @@ def run_andersen_benchmark(
     after every file (resume-capable).
     """
     data_dir = Path(data_dir)
-    files = sorted(
+
+    all_files = sorted(
         data_dir.glob("wta_*.txt"),
         key=lambda p: [int(x) for x in re.findall(r"\d+", p.stem)],
     )
+    if files is not None:
+        files_set = set(files)
+        files = [p for p in all_files if p.name in files_set]
+        if not files:
+            raise FileNotFoundError(f"No matching files found in {data_dir} for --files {files}")
+    else:
+        files = all_files
     if not files:
         raise FileNotFoundError(f"No wta_*.txt files found in {data_dir}")
 
+
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
-    csv_name = "benchmark_andersen_v2.csv" if method == "bna_v2" else "benchmark_andersen.csv"
-    csv_path = output_dir / csv_name
+    if results_file is not None:
+        csv_path = output_dir / results_file
+    else:
+        csv_name = "benchmark_andersen_v2.csv" if method == "bna_v2" else "benchmark_andersen.csv"
+        csv_path = output_dir / csv_name
 
     solver_fn = solve_branch_and_adjust_v2 if method == "bna_v2" else solve_branch_and_adjust
 
-    if csv_path.exists():
+
+    # If using a custom results file, always rerun all requested files
+    if results_file is not None:
+        results = []
+        done: set[str] = set()
+    elif csv_path.exists():
         existing_df = pd.read_csv(csv_path)
         results = existing_df.to_dict("records")
         done = {r["file"] for r in results if "error" not in r or pd.isna(r.get("error"))}
@@ -95,7 +114,6 @@ def run_andersen_benchmark(
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for the Andersen benchmark script."""
     parser = argparse.ArgumentParser(
         description="Benchmark Branch-and-Adjust on Andersen et al. (2022) instances."
     )
@@ -122,6 +140,16 @@ def _parse_args() -> argparse.Namespace:
         default="data/data_andersen",
         help="Directory containing wta_WxTxmu.txt instance files.",
     )
+    parser.add_argument(
+        "--files",
+        nargs="+",
+        help="List of specific instance filenames to run (from data-dir). If omitted, runs all.",
+    )
+    parser.add_argument(
+        "--results-file",
+        default=None,
+        help="Custom CSV file for results (in results/). If set, always reruns all requested files.",
+    )
     return parser.parse_args()
 
 
@@ -133,6 +161,8 @@ def main() -> None:
         time_limit_seconds=args.time_limit,
         method=args.method,
         bna_delta=args.delta,
+        files=args.files,
+        results_file=args.results_file,
     )
 
 

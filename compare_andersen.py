@@ -109,15 +109,11 @@ print(f"  Table saved → {out_table.relative_to(ROOT)}")
 # plots
 MU_COLORS  = {1: "#2196F3", 2: "#4CAF50", 3: "#FF5722"}
 MU_MARKERS = {1: "o", 2: "s", 3: "^"}
+TITLE_SUFFIX = "BnA Gurobi (our impl.) vs Andersen et al. (2022)\nδ = 0.00001, time limit = 7200 s"
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-fig.suptitle(
-    "BnA Gurobi (our impl.) vs Andersen et al. (2022)\nδ = 0.00001, time limit = 7200 s",
-    fontsize=13, fontweight="bold",
-)
-
-# Runtime comparison
-ax1 = axes[0]
+# runtime comparison (log-log scatter)
+fig1, ax1 = plt.subplots(figsize=(7, 6))
+fig1.suptitle(TITLE_SUFFIX, fontsize=12, fontweight="bold")
 
 for mu_val, grp in df.groupby("mu"):
     ax1.scatter(
@@ -127,10 +123,8 @@ for mu_val, grp in df.groupby("mu"):
         s=70, label=f"μ = {mu_val}", zorder=3,
     )
 
-# diagonal: equal runtime
 lim = [1, 20000]
 ax1.plot(lim, lim, "k--", lw=1, alpha=0.5, label="equal time")
-# time limit line
 ax1.axhline(7200, color="gray", lw=1, ls=":", alpha=0.7, label="7200 s limit")
 ax1.axvline(7200, color="gray", lw=1, ls=":", alpha=0.7)
 
@@ -142,13 +136,19 @@ ax1.set_title("Runtime comparison", fontsize=11)
 ax1.legend(fontsize=9)
 ax1.grid(True, which="both", alpha=0.3)
 
+fig1.tight_layout()
+out_fig1 = OUT_DIR / "comparison_andersen_time.png"
+fig1.savefig(out_fig1, dpi=150, bbox_inches="tight")
+print(f"  Plot 1 saved → {out_fig1.relative_to(ROOT)}")
+
 # UB relative difference [%]
-ax2 = axes[1]
+fig2, ax2 = plt.subplots(figsize=(14, 5))
+fig2.suptitle(TITLE_SUFFIX, fontsize=12, fontweight="bold")
 
 x_pos = np.arange(len(df))
 bar_colors = [MU_COLORS[m] for m in df["mu"]]
 
-bars = ax2.bar(x_pos, df["ub_diff_pct"], color=bar_colors, edgecolor="white", linewidth=0.4)
+ax2.bar(x_pos, df["ub_diff_pct"], color=bar_colors, edgecolor="white", linewidth=0.4)
 
 # Hatch bars where we hit a time or memory limit
 for i, (_, row) in enumerate(df.iterrows()):
@@ -158,14 +158,13 @@ for i, (_, row) in enumerate(df.iterrows()):
 
 ax2.axhline(0, color="black", lw=1)
 
-# x-axis labels
-labels = [f"{r.weapons}×{r.targets}\nμ={r.mu}" for _, r in df.iterrows()]
+# x-axis: single-line label per bar, wider figure so they don't overlap
+labels = [f"{r.weapons}×{r.targets} μ={r.mu}" for _, r in df.iterrows()]
 ax2.set_xticks(x_pos)
-ax2.set_xticklabels(labels, fontsize=6.5, rotation=45, ha="right")
+ax2.set_xticklabels(labels, fontsize=8, rotation=55, ha="right")
 ax2.set_ylabel("Δ UB [%]  = (ours − And.) / And. × 100", fontsize=10)
 ax2.set_title("Relative UB difference (negative = ours better)", fontsize=11)
 
-# Legend: colors for μ, hatch for limit status
 legend_elements = [
     Patch(facecolor=MU_COLORS[1], label="μ = 1"),
     Patch(facecolor=MU_COLORS[2], label="μ = 2"),
@@ -176,10 +175,11 @@ ax2.legend(handles=legend_elements, fontsize=9, loc="upper left")
 ax2.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f%%"))
 ax2.grid(axis="y", alpha=0.3)
 
-plt.tight_layout()
-out_fig = OUT_DIR / "comparison_andersen.png"
-plt.savefig(out_fig, dpi=150, bbox_inches="tight")
-print(f"  Plot saved   → {out_fig.relative_to(ROOT)}")
+fig2.tight_layout()
+out_fig2 = OUT_DIR / "comparison_andersen_ub.png"
+fig2.savefig(out_fig2, dpi=150, bbox_inches="tight")
+print(f"  Plot 2 saved → {out_fig2.relative_to(ROOT)}")
+
 plt.show()
 
 # Summary statistics

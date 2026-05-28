@@ -14,6 +14,98 @@ from .models import WTAInstance, WTASolution, objective_value
 _EPS = 1e-10
 _MIN_EXP = 1e-320
 
+_GRB_STATUS_MAP: dict[int, str] = {
+    GRB.OPTIMAL: "optimal",
+    GRB.TIME_LIMIT: "time_limit",
+    GRB.INFEASIBLE: "infeasible",
+    GRB.INF_OR_UNBD: "inf_or_unbd",
+    GRB.UNBOUNDED: "unbounded",
+    GRB.INTERRUPTED: "interrupted",
+    GRB.NODE_LIMIT: "node_limit",
+    GRB.SOLUTION_LIMIT: "solution_limit",
+    GRB.ITERATION_LIMIT: "iteration_limit",
+    GRB.MEM_LIMIT: "mem_limit",
+}
+
+
+def _compute_integer_solution(
+    x_keys: list[tuple[int, int]],
+    x_values: list[float],
+    mu_values: list[int],
+    instance: WTAInstance,
+) -> tuple[list[list[int]], list[float], list[float], list[float], float]:
+    """Build x*, true survival, log-survival, per-target costs, and total objective."""
+    n_w, n_t = instance.weapons, instance.targets
+    current_assignment = [[0] * n_t for _ in range(n_w)]
+    true_survival = [1.0] * n_t
+    true_log_survival = [0.0] * n_t
+    for idx, (i, j) in enumerate(x_keys):
+        value = max(0, min(mu_values[i], int(round(x_values[idx]))))
+        current_assignment[i][j] = value
+        if value > 0:
+            p_ij = instance.destruction_probabilities[i][j]
+            log_q = math.log(max(1.0 - p_ij, _EPS))
+            true_survival[j] *= (1.0 - p_ij) ** value
+            true_log_survival[j] += value * log_q
+    true_target_cost = [instance.target_values[j] * true_survival[j] for j in range(n_t)]
+    return current_assignment, true_survival, true_log_survival, true_target_cost, sum(true_target_cost)
+
+
+def _add_tangent_cuts(
+    cb_model,
+    z_values: list[float],
+    true_target_cost: list[float],
+    true_log_survival: list[float],
+) -> int:
+    """Add tangent lazy cuts for targets where z underestimates the true cost.
+
+    Returns the number of cuts added.
+    """
+    inst = cb_model._instance
+    n_t = inst.targets
+    needs_adjustment = [j for j in range(n_t) if z_values[j] < true_target_cost[j] - 1e-6]
+    if not needs_adjustment:
+        return 0
+    if len(needs_adjustment) > 50:
+        needs_adjustment = sorted(
+            needs_adjustment,
+            key=lambda jj: true_target_cost[jj] - z_values[jj],
+            reverse=True,
+        )[:50]
+    for j in needs_adjustment:
+        c_j = true_target_cost[j]
+        y_j_star = true_log_survival[j]
+        cb_model.cbLazy(
+            cb_model._z[j] >= c_j * (1.0 - y_j_star) + gp.quicksum(
+                c_j * math.log(max(1.0 - inst.destruction_probabilities[i][j], _EPS))
+                * cb_model._x[i, j]
+                for i in range(inst.weapons)
+            )
+        )
+    return len(needs_adjustment)
+
+
+def _finalize_solution(
+    model,
+    instance: WTAInstance,
+    x: dict[tuple[int, int], gp.Var],
+) -> tuple[tuple[tuple[int, ...], ...], float]:
+    """Extract the best assignment and objective after model.optimize().
+
+    Falls back to model variables if callback tracking missed a solution.
+    Returns all-zeros with inf objective if no feasible solution was found.
+    """
+    if model._best_assignment is not None:
+        return model._best_assignment, model._best_true_obj
+    if model.SolCount > 0:
+        assignment = tuple(
+            tuple(int(round(x[i, j].X)) for j in range(instance.targets))
+            for i in range(instance.weapons)
+        )
+        return assignment, _integer_assignment_objective(instance, assignment)
+    empty = tuple(tuple(0 for _ in range(instance.targets)) for _ in range(instance.weapons))
+    return empty, float("inf")
+
 
 def _normalize_warm_start(
         instance: WTAInstance,
@@ -444,38 +536,14 @@ def solve_branch_and_adjust(
                 if where != GRB.Callback.MIPSOL:
                     return
 
-                inst = cb_model._instance
-                mu_cb = cb_model._mu_values
-                n_w = inst.weapons
-                n_t = inst.targets
-
                 x_values = cb_model.cbGetSolution(cb_model._x_vars)
                 z_values = cb_model.cbGetSolution(cb_model._z_vars)
 
-                # Build x* and compute true nonlinear objective.
-                # Also track y_j* = sum_i x*_ij * log(1-p_ij) for tangent cuts.
-                current_assignment = [[0] * n_t for _ in range(n_w)]
-                true_survival = [1.0] * n_t
-                true_log_survival = [0.0] * n_t
-
-                for idx, (i, j) in enumerate(cb_model._x_keys):
-                    value = int(round(x_values[idx]))
-                    if value < 0:
-                        value = 0
-                    elif value > mu_cb[i]:
-                        value = mu_cb[i]
-                    current_assignment[i][j] = value
-                    if value > 0:
-                        p_ij = inst.destruction_probabilities[i][j]
-                        log_q = math.log(max(1.0 - p_ij, _EPS))
-                        true_survival[j] *= (1.0 - p_ij) ** value
-                        true_log_survival[j] += value * log_q
-
-                true_target_cost = [
-                    inst.target_values[j] * true_survival[j]
-                    for j in range(n_t)
-                ]
-                true_obj = sum(true_target_cost)
+                current_assignment, _, true_log_survival, true_target_cost, true_obj = (
+                    _compute_integer_solution(
+                        cb_model._x_keys, x_values, cb_model._mu_values, cb_model._instance
+                    )
+                )
 
                 if true_obj < cb_model._best_true_obj - 1e-9:
                     cb_model._best_true_obj = true_obj
@@ -483,73 +551,15 @@ def solve_branch_and_adjust(
                         tuple(row) for row in current_assignment
                     )
 
-                needs_adjustment = [
-                    j for j in range(n_t)
-                    if z_values[j] < true_target_cost[j] - 1e-6
-                ]
-                if not needs_adjustment:
-                    return
-
-                # Limit to top-50 most violated targets.
-                if len(needs_adjustment) > 50:
-                    needs_adjustment = sorted(
-                        needs_adjustment,
-                        key=lambda jj: true_target_cost[jj] - z_values[jj],
-                        reverse=True,
-                    )[:50]
-
-                # Tangent cut at y_j*: z[j] >= c_j*(1 + y[j] - y_j*)
-                # where y[j] = sum_i log(1-p_ij)*x[i,j] and c_j = w_j*exp(y_j*).
-                # Globally valid (tangent to exp), no indicator variables needed.
-                # Violated at current LP solution (z[j] < c_j), forcing rejection.
-                # On second visit with same x*, forces z[j] >= c_j. Accepts at T*.
-                for j in needs_adjustment:
-                    c_j = true_target_cost[j]
-                    y_j_star = true_log_survival[j]
-                    cb_model.cbLazy(
-                        cb_model._z[j] >= c_j * (1.0 - y_j_star) + gp.quicksum(
-                            c_j * math.log(max(1.0 - inst.destruction_probabilities[i][j], _EPS))
-                            * cb_model._x[i, j]
-                            for i in range(n_w)
-                        )
-                    )
-                    cb_model._lazy_cuts_added += 1
+                cb_model._lazy_cuts_added += _add_tangent_cuts(
+                    cb_model, z_values, true_target_cost, true_log_survival
+                )
 
             model.optimize(bna_callback)
 
             runtime = perf_counter() - start
-
-            status_map = {
-                GRB.OPTIMAL: "optimal",
-                GRB.TIME_LIMIT: "time_limit",
-                GRB.INFEASIBLE: "infeasible",
-                GRB.INF_OR_UNBD: "inf_or_unbd",
-                GRB.UNBOUNDED: "unbounded",
-                GRB.INTERRUPTED: "interrupted",
-                GRB.NODE_LIMIT: "node_limit",
-                GRB.SOLUTION_LIMIT: "solution_limit",
-                GRB.ITERATION_LIMIT: "iteration_limit",
-                GRB.MEM_LIMIT: "mem_limit",
-            }
-            status_str = status_map.get(model.Status, f"status_{model.Status}")
-
-            if model._best_assignment is not None:
-                final_assignment = model._best_assignment
-                final_obj = model._best_true_obj
-            elif model.SolCount > 0:
-                # Fallback should rarely be needed, because every integer solution
-                # should pass through MIPSOL. It is kept for robustness.
-                final_assignment_list = [[0 for _ in range(targets)] for _ in range(weapons)]
-                for i in range(weapons):
-                    for j in range(targets):
-                        final_assignment_list[i][j] = int(round(x[i, j].X))
-                final_assignment = tuple(tuple(row) for row in final_assignment_list)
-                final_obj = _integer_assignment_objective(instance, final_assignment)
-            else:
-                final_assignment = tuple(
-                    tuple(0 for _ in range(targets)) for _ in range(weapons)
-                )
-                final_obj = float("inf")
+            status_str = _GRB_STATUS_MAP.get(model.Status, f"status_{model.Status}")
+            final_assignment, final_obj = _finalize_solution(model, instance, x)
 
             return WTASolution(
                 assignment=final_assignment,

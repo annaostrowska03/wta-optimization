@@ -8,6 +8,7 @@ import seaborn as sns
 
 from wta_optimization.data import generate_random_instance, load_instance_from_file, load_andersen_instance
 from wta_optimization.exact import solve_exact, solve_branch_and_adjust
+from wta_optimization.exact_v2 import solve_branch_and_adjust_v2
 from wta_optimization.heuristic import (
     solve_greedy,
     solve_local_search,
@@ -493,13 +494,14 @@ def run_andersen_benchmark(
     data_dir: str | Path = "data/data_andersen",
     exact_time_limit_seconds: float = EXACT_TIME_LIMIT_SECONDS,
     use_exact_warm_start: bool = True,
-    methods: str = "both",  # "exact", "bna", or "both"
+    methods: str = "both",  # "exact", "bna", "bna_v2", or "both"
     bna_delta: float = 1e-5,  # Andersen Table 5 uses delta=0.00001
 ) -> pd.DataFrame:
     """Run solve_exact and/or solve_branch_and_adjust on all Andersen instance files.
 
     Files are expected in the format  wta_{W}x{T}x{seed}.txt  inside data_dir.
-    Results are saved to results/benchmark_andersen.csv after every file.
+    Results are saved to results/benchmark_andersen.csv (or benchmark_andersen_v2.csv
+    when methods='bna_v2') after every file.
     """
     data_dir = Path(data_dir)
     files = sorted(
@@ -511,7 +513,8 @@ def run_andersen_benchmark(
 
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
-    csv_path = output_dir / "benchmark_andersen.csv"
+    csv_name = "benchmark_andersen_v2.csv" if methods == "bna_v2" else "benchmark_andersen.csv"
+    csv_path = output_dir / csv_name
 
     if csv_path.exists():
         existing_df = pd.read_csv(csv_path)
@@ -543,7 +546,8 @@ def run_andersen_benchmark(
             warm = sol_greedy if use_exact_warm_start else None
 
             run_exact = methods in ("exact", "both")
-            run_bna = methods in ("bna", "both")
+            run_bna   = methods in ("bna",    "both")
+            run_bna_v2 = methods == "bna_v2"
 
             sol_exact = (
                 solve_exact(
@@ -556,14 +560,14 @@ def run_andersen_benchmark(
                 else None
             )
             sol_bna = (
-                solve_branch_and_adjust(
+                (solve_branch_and_adjust_v2 if run_bna_v2 else solve_branch_and_adjust)(
                     instance,
                     delta=bna_delta,
                     warm_start=warm,
                     time_limit_seconds=exact_time_limit_seconds,
                     mu=mu_list,
                 )
-                if run_bna
+                if (run_bna or run_bna_v2)
                 else None
             )
 
@@ -619,7 +623,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--andersen-methods",
-        choices=["exact", "bna", "both"],
+        choices=["exact", "bna", "bna_v2", "both"],
         default="both",
         help="Which methods to run in andersen mode. Default: both.",
     )

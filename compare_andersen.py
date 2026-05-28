@@ -6,17 +6,19 @@ Usage:
     python compare_andersen.py
 """
 
-import pandas as pd
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
-from pathlib import Path
+import pandas as pd
 from matplotlib.patches import Patch
 
-ROOT       = Path(__file__).parent
+ROOT = Path(__file__).parent
 ANDERSEN_R = ROOT / "data" / "results.csv"
-OUR_CSV    = ROOT / "results" / "benchmark_andersen.csv"
-OUT_DIR    = ROOT / "results"
+OUR_CSV = ROOT / "results" / "benchmark_andersen.csv"
+OUT_DIR = ROOT / "results"
+
 
 # Load Andersen reference data
 def load_andersen_ref(path: Path) -> pd.DataFrame:
@@ -37,19 +39,26 @@ def load_andersen_ref(path: Path) -> pd.DataFrame:
             if len(parts) < 9:
                 continue
             try:
-                W   = int(parts[1])
-                T   = int(parts[2])
-                mu  = int(parts[3])
-                lb  = float(parts[5])
-                ub  = float(parts[6])
+                W = int(parts[1])
+                T = int(parts[2])
+                mu = int(parts[3])
+                lb = float(parts[5])
+                ub = float(parts[6])
                 gap = parts[7].strip()
-                t   = float(parts[8])
+                t = float(parts[8])
             except (ValueError, IndexError):
                 continue
-            rows.append(dict(
-                weapons=W, targets=T, mu=mu,
-                and_lb=lb, and_ub=ub, and_gap=gap, and_time=t
-            ))
+            rows.append(
+                dict(
+                    weapons=W,
+                    targets=T,
+                    mu=mu,
+                    and_lb=lb,
+                    and_ub=ub,
+                    and_gap=gap,
+                    and_time=t,
+                )
+            )
     return pd.DataFrame(rows)
 
 
@@ -57,33 +66,47 @@ and_df = load_andersen_ref(ANDERSEN_R)
 our_df = pd.read_csv(OUR_CSV)
 
 df = pd.merge(
-    our_df[["weapons","targets","mu","bna_time_s","bna_obj","bna_status"]],
+    our_df[["weapons", "targets", "mu", "bna_time_s", "bna_obj", "bna_status"]],
     and_df,
-    on=["weapons","targets","mu"],
+    on=["weapons", "targets", "mu"],
 )
 
-df["instance"]    = df.apply(lambda r: f"{r.weapons}×{r.targets}", axis=1)
+df["instance"] = df.apply(lambda r: f"{r.weapons}×{r.targets}", axis=1)
 df["ub_diff_pct"] = (df["bna_obj"] - df["and_ub"]) / df["and_ub"] * 100
-df["time_ratio"]  = df["bna_time_s"] / df["and_time"]
+df["time_ratio"] = df["bna_time_s"] / df["and_time"]
 
 status_map = {"optimal": "opt✓", "time_limit": "TL", "mem_limit": "MEM"}
 df["our_status_short"] = df["bna_status"].map(status_map).fillna(df["bna_status"])
-df["and_status_short"] = df["and_gap"].apply(
-    lambda g: "opt✓" if g == "opt" else g
-)
+df["and_status_short"] = df["and_gap"].apply(lambda g: "opt✓" if g == "opt" else g)
 
-table = df[[
-    "instance","mu",
-    "and_lb","and_ub","and_status_short","and_time",
-    "bna_obj","our_status_short","bna_time_s",
-    "ub_diff_pct","time_ratio",
-]].copy()
+table = df[
+    [
+        "instance",
+        "mu",
+        "and_lb",
+        "and_ub",
+        "and_status_short",
+        "and_time",
+        "bna_obj",
+        "our_status_short",
+        "bna_time_s",
+        "ub_diff_pct",
+        "time_ratio",
+    ]
+].copy()
 
 table.columns = [
-    "Instance","μ",
-    "And. LB","And. UB","And. status","And. time [s]",
-    "Our UB","Our status","Our time [s]",
-    "Δ UB [%]","Time ratio",
+    "Instance",
+    "μ",
+    "And. LB",
+    "And. UB",
+    "And. status",
+    "And. time [s]",
+    "Our UB",
+    "Our status",
+    "Our time [s]",
+    "Δ UB [%]",
+    "Time ratio",
 ]
 
 # display formatting
@@ -91,12 +114,12 @@ pd.set_option("display.float_format", "{:.4g}".format)
 pd.set_option("display.max_rows", 50)
 pd.set_option("display.width", 160)
 
-print("\n" + "="*90)
+print("\n" + "=" * 90)
 print("  Branch-and-Adjust comparison: our implementation vs Andersen et al. (2022)")
 print("  δ = 0.00001,  time limit = 7200 s")
-print("="*90)
+print("=" * 90)
 print(table.to_string(index=False))
-print("="*90)
+print("=" * 90)
 print("  Δ UB [%] = (Our UB − And. UB) / And. UB × 100%  (negative = ours better)")
 print("  Time ratio = Our time / And. time  (>1 = slower)")
 print()
@@ -107,9 +130,11 @@ table.to_csv(out_table, index=False)
 print(f"  Table saved → {out_table.relative_to(ROOT)}")
 
 # plots
-MU_COLORS  = {1: "#2196F3", 2: "#4CAF50", 3: "#FF5722"}
+MU_COLORS = {1: "#2196F3", 2: "#4CAF50", 3: "#FF5722"}
 MU_MARKERS = {1: "o", 2: "s", 3: "^"}
-TITLE_SUFFIX = "BnA Gurobi (our impl.) vs Andersen et al. (2022)\nδ = 0.00001, time limit = 7200 s"
+TITLE_SUFFIX = (
+    "BnA Gurobi (our impl.) vs Andersen et al. (2022)\nδ = 0.00001, time limit = 7200 s"
+)
 
 # runtime comparison (log-log scatter)
 fig1, ax1 = plt.subplots(figsize=(7, 6))
@@ -117,10 +142,13 @@ fig1.suptitle(TITLE_SUFFIX, fontsize=12, fontweight="bold")
 
 for mu_val, grp in df.groupby("mu"):
     ax1.scatter(
-        grp["and_time"], grp["bna_time_s"],
+        grp["and_time"],
+        grp["bna_time_s"],
         color=MU_COLORS[mu_val],
         marker=MU_MARKERS[mu_val],
-        s=70, label=f"μ = {mu_val}", zorder=3,
+        s=70,
+        label=f"μ = {mu_val}",
+        zorder=3,
     )
 
 lim = [1, 20000]
@@ -155,8 +183,14 @@ ax2.bar(x_pos, df["ub_diff_pct"], color=bar_colors, edgecolor="white", linewidth
 # Hatch bars where we hit a time or memory limit
 for i, (_, row) in enumerate(df.iterrows()):
     if row["our_status_short"] in ("TL", "MEM"):
-        ax2.bar(x_pos[i], row["ub_diff_pct"],
-                color=bar_colors[i], edgecolor="black", linewidth=1.2, hatch="//")
+        ax2.bar(
+            x_pos[i],
+            row["ub_diff_pct"],
+            color=bar_colors[i],
+            edgecolor="black",
+            linewidth=1.2,
+            hatch="//",
+        )
 
 ax2.axhline(0, color="black", lw=1)
 
@@ -188,15 +222,19 @@ plt.show()
 print()
 print("  Summary:")
 n = len(df)
-n_opt_ours   = (df["bna_status"] == "optimal").sum()
-n_opt_and    = (df["and_gap"] == "opt").sum()
-n_we_better  = (df["ub_diff_pct"] < -0.0001).sum()
-n_we_worse   = (df["ub_diff_pct"] >  0.0001).sum()
-n_equal      = n - n_we_better - n_we_worse
+n_opt_ours = (df["bna_status"] == "optimal").sum()
+n_opt_and = (df["and_gap"] == "opt").sum()
+n_we_better = (df["ub_diff_pct"] < -0.0001).sum()
+n_we_worse = (df["ub_diff_pct"] > 0.0001).sum()
+n_equal = n - n_we_better - n_we_worse
 
 print(f"Instances: {n}")
 print(f"Andersen opt: {n_opt_and}/{n}  |  Ours opt: {n_opt_ours}/{n}")
-print(f"Better UB than Andersen: {n_we_better}  |  Equal: {n_equal}  |  Worse: {n_we_worse}")
+print(
+    f"Better UB than Andersen: {n_we_better}  |  Equal: {n_equal}  |  Worse: {n_we_worse}"
+)
 print(f"Median Δ UB:       {df['ub_diff_pct'].median():.4f}%")
 print(f"Median time ratio: {df['time_ratio'].median():.2f}×")
-print(f"Min/Max time ratio: {df['time_ratio'].min():.2f}× / {df['time_ratio'].max():.2f}×")
+print(
+    f"Min/Max time ratio: {df['time_ratio'].min():.2f}× / {df['time_ratio'].max():.2f}×"
+)

@@ -35,23 +35,29 @@ def run_andersen_benchmark(
         files_set = set(files)
         files = [p for p in all_files if p.name in files_set]
         if not files:
-            raise FileNotFoundError(f"No matching files found in {data_dir} for --files {files}")
+            raise FileNotFoundError(
+                f"No matching files found in {data_dir} for --files {files}"
+            )
     else:
         files = all_files
     if not files:
         raise FileNotFoundError(f"No wta_*.txt files found in {data_dir}")
-
 
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
     if results_file is not None:
         csv_path = output_dir / results_file
     else:
-        csv_name = "benchmark_andersen_v2.csv" if method == "bna_v2" else "benchmark_andersen.csv"
+        csv_name = (
+            "benchmark_andersen_v2.csv"
+            if method == "bna_v2"
+            else "benchmark_andersen.csv"
+        )
         csv_path = output_dir / csv_name
 
-    solver_fn = solve_branch_and_adjust_v2 if method == "bna_v2" else solve_branch_and_adjust
-
+    solver_fn = (
+        solve_branch_and_adjust_v2 if method == "bna_v2" else solve_branch_and_adjust
+    )
 
     # If using a custom results file, always rerun all requested files
     if results_file is not None:
@@ -60,14 +66,20 @@ def run_andersen_benchmark(
     elif csv_path.exists():
         existing_df = pd.read_csv(csv_path)
         results = existing_df.to_dict("records")
-        done = {r["file"] for r in results if "error" not in r or pd.isna(r.get("error"))}
+        done = {
+            r["file"] for r in results if "error" not in r or pd.isna(r.get("error"))
+        }
         print(f"Resuming — {len(done)} existing rows loaded from {csv_path}")
     else:
         results = []
         done: set[str] = set()
 
-    print(f"Andersen benchmark ({method}) — {len(files)} files, time limit {time_limit_seconds:.0f}s")
-    print(f"{'File':<22} | {'W':>4} | {'T':>4} | {'mu':>3} | {'Time [s]':>10} | {'Objective':>12} | Status")
+    print(
+        f"Andersen benchmark ({method}) — {len(files)} files, time limit {time_limit_seconds:.0f}s"
+    )
+    print(
+        f"{'File':<22} | {'W':>4} | {'T':>4} | {'mu':>3} | {'Time [s]':>10} | {'Objective':>12} | Status"
+    )
 
     for filepath in files:
         fname = filepath.name
@@ -100,10 +112,20 @@ def run_andersen_benchmark(
                 "bna_status": sol.status,
             }
             results.append(row)
-            print(f"{fname:<22} | {weapons:>4} | {targets:>4} | {mu:>3} | {sol.runtime_seconds:>10.2f} | {sol.objective_value:>12.4f} | {sol.status}")
+            print(
+                f"{fname:<22} | {weapons:>4} | {targets:>4} | {mu:>3} | {sol.runtime_seconds:>10.2f} | {sol.objective_value:>12.4f} | {sol.status}"
+            )
         except Exception as exc:
             print(f"{fname:<22} | ERROR: {exc}")
-            results.append({"file": fname, "weapons": weapons, "targets": targets, "mu": mu_val, "error": str(exc)})
+            results.append(
+                {
+                    "file": fname,
+                    "weapons": weapons,
+                    "targets": targets,
+                    "mu": mu_val,
+                    "error": str(exc),
+                }
+            )
 
         pd.DataFrame(results).to_csv(csv_path, index=False)
 

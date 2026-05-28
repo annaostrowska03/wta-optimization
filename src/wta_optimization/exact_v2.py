@@ -25,17 +25,11 @@ from typing import Sequence
 import gurobipy as gp
 from gurobipy import GRB
 
+from .exact import (_EPS, _GRB_STATUS_MAP, _add_tangent_cuts,
+                    _compute_breakpoints, _compute_integer_solution,
+                    _finalize_solution, _normalize_integer_warm_start,
+                    _resolve_mu)
 from .models import WTAInstance, WTASolution
-from .exact import (
-    _EPS,
-    _GRB_STATUS_MAP,
-    _add_tangent_cuts,
-    _compute_breakpoints,
-    _compute_integer_solution,
-    _finalize_solution,
-    _normalize_integer_warm_start,
-    _resolve_mu,
-)
 
 
 def _lbda_from_log_survival(B_j: list[float], y_star: float) -> dict[int, float]:
@@ -60,8 +54,8 @@ def _lbda_from_log_survival(B_j: list[float], y_star: float) -> dict[int, float]
     if abs(denom) < 1e-15:
         return {t0: 1.0}
 
-    alpha = (B_j[t0 + 1] - y) / denom   # weight for t0
-    beta  = 1.0 - alpha                  # weight for t0+1
+    alpha = (B_j[t0 + 1] - y) / denom  # weight for t0
+    beta = 1.0 - alpha  # weight for t0+1
     result: dict[int, float] = {}
     if alpha > 1e-15:
         result[t0] = alpha
@@ -71,11 +65,11 @@ def _lbda_from_log_survival(B_j: list[float], y_star: float) -> dict[int, float]
 
 
 def solve_branch_and_adjust_v2(
-        instance: WTAInstance,
-        delta: float = 1e-5,
-        warm_start: WTASolution | Sequence[Sequence[int]] | None = None,
-        time_limit_seconds: float | None = None,
-        mu: Sequence[int] | None = None,
+    instance: WTAInstance,
+    delta: float = 1e-5,
+    warm_start: WTASolution | Sequence[Sequence[int]] | None = None,
+    time_limit_seconds: float | None = None,
+    mu: Sequence[int] | None = None,
 ) -> WTASolution:
     """
     Branch-and-Adjust with cbSetSolution injection.
@@ -94,7 +88,9 @@ def solve_branch_and_adjust_v2(
 
     start = perf_counter()
     mu_values = _resolve_mu(instance, mu)
-    warm_start_assignment = _normalize_integer_warm_start(instance, warm_start, mu_values)
+    warm_start_assignment = _normalize_integer_warm_start(
+        instance, warm_start, mu_values
+    )
 
     weapons = instance.weapons
     targets = instance.targets
@@ -137,7 +133,9 @@ def solve_branch_and_adjust_v2(
 
             # Delta-based breakpoints per target
             B: list[list[float]] = [
-                _compute_breakpoints(instance.destruction_probabilities, mu_values, j, delta)
+                _compute_breakpoints(
+                    instance.destruction_probabilities, mu_values, j, delta
+                )
                 for j in range(targets)
             ]
 
@@ -167,10 +165,11 @@ def solve_branch_and_adjust_v2(
                 # Under-approximation: Andersen et al. compact PWL form
                 under_approx = gp.quicksum(
                     (
-                        w_j * math.exp(B[j][t]) if t == 0
-                        else w_j * (math.exp(B[j][t]) - delta) if t < last_t
-                        else w_j
-                    ) * lbda[j, t]
+                        w_j * math.exp(B[j][t])
+                        if t == 0
+                        else w_j * (math.exp(B[j][t]) - delta) if t < last_t else w_j
+                    )
+                    * lbda[j, t]
                     for t in range(len(B[j]))
                 )
                 model.addConstr(z[j] >= under_approx, name=f"z_underapprox_{j}")
@@ -184,7 +183,9 @@ def solve_branch_and_adjust_v2(
                 model.addConstr(
                     gp.quicksum(B[j][t] * lbda[j, t] for t in range(len(B[j])))
                     == gp.quicksum(
-                        math.log(max(1.0 - instance.destruction_probabilities[i][j], _EPS))
+                        math.log(
+                            max(1.0 - instance.destruction_probabilities[i][j], _EPS)
+                        )
                         * x[i, j]
                         for i in range(weapons)
                     ),
@@ -222,15 +223,17 @@ def solve_branch_and_adjust_v2(
 
                 current_assignment, _, true_log_survival, true_target_cost, true_obj = (
                     _compute_integer_solution(
-                        cb_model._x_keys, x_values, cb_model._mu_values, cb_model._instance
+                        cb_model._x_keys,
+                        x_values,
+                        cb_model._mu_values,
+                        cb_model._instance,
                     )
                 )
-
 
                 # If new best, inject (x*, lbda*, z*=T*) as incumbent
 
                 if true_obj < cb_model._best_true_obj - 1e-9:
-                    cb_model._best_true_obj  = true_obj
+                    cb_model._best_true_obj = true_obj
                     cb_model._best_assignment = tuple(
                         tuple(row) for row in current_assignment
                     )
@@ -244,7 +247,9 @@ def solve_branch_and_adjust_v2(
                         for t_idx, w_val in weights.items():
                             lbda_star_dict[j, t_idx] = w_val
 
-                    inject_vars = cb_model._x_vars + cb_model._lbda_vars + cb_model._z_vars
+                    inject_vars = (
+                        cb_model._x_vars + cb_model._lbda_vars + cb_model._z_vars
+                    )
                     inject_vals = (
                         [float(x_values[k]) for k in range(len(cb_model._x_vars))]
                         + [lbda_star_dict.get(key, 0.0) for key in cb_model._lbda_keys]
@@ -256,6 +261,7 @@ def solve_branch_and_adjust_v2(
                 cb_model._lazy_cuts_added += _add_tangent_cuts(
                     cb_model, z_values, true_target_cost, true_log_survival
                 )
+
             model.optimize(bna_callback)
 
             runtime = perf_counter() - start

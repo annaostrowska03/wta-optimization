@@ -351,6 +351,7 @@ def solve_branch_and_adjust(
             model.Params.LazyConstraints = 1
             if time_limit_seconds is not None:
                 model.Params.TimeLimit = time_limit_seconds
+            model.Params.SoftMemLimit = 12.0  # stop gracefully at 12 GB
 
             # --------------------------------------------------------------
             # Decision variables x[i,j]
@@ -380,33 +381,6 @@ def solve_branch_and_adjust(
                     gp.quicksum(x[i, j] for j in range(targets)) <= mu_values[i],
                     name=f"weapon_availability_{i}",
                 )
-
-            # --------------------------------------------------------------
-            # One-hot value indicators for integer variables with mu_i > 1.
-            # Needed to build an exact-match lazy cut for integer assignments.
-            # --------------------------------------------------------------
-            value_is: dict[tuple[int, int, int], gp.Var] = {}
-            for i in range(weapons):
-                if mu_values[i] <= 1:
-                    continue
-                for j in range(targets):
-                    indicators = []
-                    for k in range(mu_values[i] + 1):
-                        ind = model.addVar(
-                            vtype=GRB.BINARY,
-                            name=f"x_is_{i}_{j}_{k}",
-                        )
-                        value_is[i, j, k] = ind
-                        indicators.append(ind)
-
-                    model.addConstr(
-                        gp.quicksum(indicators) == 1,
-                        name=f"x_value_onehot_{i}_{j}",
-                    )
-                    model.addConstr(
-                        x[i, j] == gp.quicksum(k * value_is[i, j, k] for k in range(mu_values[i] + 1)),
-                        name=f"x_value_link_{i}_{j}",
-                    )
 
             # --------------------------------------------------------------
             # Delta-based breakpoints per target.
@@ -474,11 +448,7 @@ def solve_branch_and_adjust(
             if warm_start_assignment is not None:
                 for i in range(weapons):
                     for j in range(targets):
-                        start_value = warm_start_assignment[i][j]
-                        x[i, j].Start = start_value
-                        if mu_values[i] > 1:
-                            for k in range(mu_values[i] + 1):
-                                value_is[i, j, k].Start = 1.0 if k == start_value else 0.0
+                        x[i, j].Start = warm_start_assignment[i][j]
 
             # --------------------------------------------------------------
             # Callback state.
@@ -488,26 +458,11 @@ def solve_branch_and_adjust(
             model._x_vars = x_vars
             model._z = z
             model._z_vars = z_vars
-            model._value_is = value_is
             model._mu_values = mu_values
             model._instance = instance
-            model._total_x_positions = weapons * targets
             model._best_true_obj = float("inf")
             model._best_assignment = None
             model._lazy_cuts_added = 0
-
-            def _match_indicator_expr(cb_model, i: int, j: int, value: int):
-                """
-                Linear expression equal to 1 iff x[i,j] equals `value`, for
-                integer-feasible solutions. Uses x itself when mu_i = 1 and
-                one-hot indicators when mu_i > 1.
-                """
-                mu_i = cb_model._mu_values[i]
-                if mu_i == 0:
-                    return 1.0
-                if mu_i == 1:
-                    return cb_model._x[i, j] if value == 1 else 1.0 - cb_model._x[i, j]
-                return cb_model._value_is[i, j, value]
 
             def bna_callback(cb_model, where):
                 if where != GRB.Callback.MIPSOL:
@@ -521,10 +476,11 @@ def solve_branch_and_adjust(
                 x_values = cb_model.cbGetSolution(cb_model._x_vars)
                 z_values = cb_model.cbGetSolution(cb_model._z_vars)
 
-                # Build the integer assignment x* and compute the true nonlinear
-                # WTA value: sum_j w_j prod_i (1-p_ij)^x_ij.
-                current_assignment = [[0 for _ in range(n_t)] for _ in range(n_w)]
-                true_survival = [1.0 for _ in range(n_t)]
+                # Build x* and compute true nonlinear objective.
+                # Also track y_j* = sum_i x*_ij * log(1-p_ij) for tangent cuts.
+                current_assignment = [[0] * n_t for _ in range(n_w)]
+                true_survival = [1.0] * n_t
+                true_log_survival = [0.0] * n_t
 
                 for idx, (i, j) in enumerate(cb_model._x_keys):
                     value = int(round(x_values[idx]))
@@ -532,12 +488,12 @@ def solve_branch_and_adjust(
                         value = 0
                     elif value > mu_cb[i]:
                         value = mu_cb[i]
-
                     current_assignment[i][j] = value
                     if value > 0:
-                        true_survival[j] *= (
-                            1.0 - inst.destruction_probabilities[i][j]
-                        ) ** value
+                        p_ij = inst.destruction_probabilities[i][j]
+                        log_q = math.log(max(1.0 - p_ij, _EPS))
+                        true_survival[j] *= (1.0 - p_ij) ** value
+                        true_log_survival[j] += value * log_q
 
                 true_target_cost = [
                     inst.target_values[j] * true_survival[j]
@@ -551,10 +507,6 @@ def solve_branch_and_adjust(
                         tuple(row) for row in current_assignment
                     )
 
-                # Exact-match distance for integer assignments:
-                #   delta_x = 0  iff every x[i,j] equals its current integer value;
-                #   delta_x >= 1 otherwise.
-                # Then z[j] >= true_cost_j * (1 - delta_x) is active only at x*.
                 needs_adjustment = [
                     j for j in range(n_t)
                     if z_values[j] < true_target_cost[j] - 1e-6
@@ -562,16 +514,28 @@ def solve_branch_and_adjust(
                 if not needs_adjustment:
                     return
 
-                match_count = gp.quicksum(
-                    _match_indicator_expr(cb_model, i, j, current_assignment[i][j])
-                    for i in range(n_w)
-                    for j in range(n_t)
-                )
-                delta_x = cb_model._total_x_positions - match_count
+                # Limit to top-50 most violated targets.
+                if len(needs_adjustment) > 50:
+                    needs_adjustment = sorted(
+                        needs_adjustment,
+                        key=lambda jj: true_target_cost[jj] - z_values[jj],
+                        reverse=True,
+                    )[:50]
 
+                # Tangent cut at y_j*: z[j] >= c_j*(1 + y[j] - y_j*)
+                # where y[j] = sum_i log(1-p_ij)*x[i,j] and c_j = w_j*exp(y_j*).
+                # Globally valid (tangent to exp), no indicator variables needed.
+                # Violated at current LP solution (z[j] < c_j), forcing rejection.
+                # On second visit with same x*, forces z[j] >= c_j. Accepts at T*.
                 for j in needs_adjustment:
+                    c_j = true_target_cost[j]
+                    y_j_star = true_log_survival[j]
                     cb_model.cbLazy(
-                        cb_model._z[j] >= true_target_cost[j] * (1.0 - delta_x)
+                        cb_model._z[j] >= c_j * (1.0 - y_j_star) + gp.quicksum(
+                            c_j * math.log(max(1.0 - inst.destruction_probabilities[i][j], _EPS))
+                            * cb_model._x[i, j]
+                            for i in range(n_w)
+                        )
                     )
                     cb_model._lazy_cuts_added += 1
 
@@ -589,6 +553,7 @@ def solve_branch_and_adjust(
                 GRB.NODE_LIMIT: "node_limit",
                 GRB.SOLUTION_LIMIT: "solution_limit",
                 GRB.ITERATION_LIMIT: "iteration_limit",
+                GRB.MEM_LIMIT: "mem_limit",
             }
             status_str = status_map.get(model.Status, f"status_{model.Status}")
 

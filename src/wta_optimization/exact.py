@@ -299,7 +299,7 @@ def solve_branch_and_adjust(
         instance: WTAInstance,
         delta: float = 1e-4,
         warm_start: WTASolution | Sequence[Sequence[int]] | None = None,
-        time_limit_seconds: float = 5400.0,
+        time_limit_seconds: float | None = None,
         mu: Sequence[int] | None = None,
 ) -> WTASolution:
     """
@@ -351,7 +351,6 @@ def solve_branch_and_adjust(
             model.Params.LazyConstraints = 1
             if time_limit_seconds is not None:
                 model.Params.TimeLimit = time_limit_seconds
-            model.Params.SoftMemLimit = 12.0  # stop gracefully at 12 GB
 
             # --------------------------------------------------------------
             # Decision variables x[i,j]

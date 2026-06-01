@@ -59,6 +59,8 @@ def objective_value(
         target_survival = target_value
         for weapon_index in range(instance.weapons):
             if assignment[weapon_index][target_index]:
-                target_survival *= 1.0 - instance.destruction_probabilities[weapon_index][target_index]
+                target_survival *= (
+                    1.0 - instance.destruction_probabilities[weapon_index][target_index]
+                )
         survival += target_survival
     return survival

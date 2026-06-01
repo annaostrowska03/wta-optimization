@@ -3,7 +3,7 @@
 from .data import load_andersen_instance
 from .exact import solve_branch_and_adjust
 from .exact_v2 import solve_branch_and_adjust_v2
-from .models import WTASolution, WTAInstance
+from .models import WTAInstance, WTASolution
 
 __all__ = [
     "WTAInstance",

@@ -25,16 +25,10 @@ from typing import Sequence
 import gurobipy as gp
 from gurobipy import GRB
 
-from .bna_common import (
-    _EPS,
-    _GRB_STATUS_MAP,
-    add_tangent_cuts,
-    compute_breakpoints,
-    compute_integer_solution,
-    finalize_solution,
-    normalize_integer_warm_start,
-    resolve_mu,
-)
+from .bna_common import (_EPS, _GRB_STATUS_MAP, add_tangent_cuts,
+                         compute_breakpoints, compute_integer_solution,
+                         finalize_solution, normalize_integer_warm_start,
+                         resolve_mu)
 from .models import WTAInstance, WTASolution
 
 

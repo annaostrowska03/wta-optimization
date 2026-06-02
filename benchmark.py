@@ -8,12 +8,12 @@ from wta_optimization.data import load_andersen_instance
 from wta_optimization.exact import solve_branch_and_adjust
 from wta_optimization.exact_v2 import solve_branch_and_adjust_v2
 
-DEFAULT_TIME_LIMIT = 7200.0
+DEFAULT_TIME_LIMIT: float | None = None
 
 
 def run_andersen_benchmark(
     data_dir: str | Path = "data/data_andersen",
-    time_limit_seconds: float = DEFAULT_TIME_LIMIT,
+    time_limit_seconds: float | None = DEFAULT_TIME_LIMIT,
     method: str = "bna",  # "bna" or "bna_v2"
     bna_delta: float = 1e-5,
     files: list[str] | None = None,
@@ -74,8 +74,11 @@ def run_andersen_benchmark(
         results = []
         done: set[str] = set()
 
+    time_limit_label = (
+        "none" if time_limit_seconds is None else f"{time_limit_seconds:.0f}s"
+    )
     print(
-        f"Andersen benchmark ({method}) — {len(files)} files, time limit {time_limit_seconds:.0f}s"
+        f"Andersen benchmark ({method}) — {len(files)} files, time limit {time_limit_label}"
     )
     print(
         f"{'File':<22} | {'W':>4} | {'T':>4} | {'mu':>3} | {'Time [s]':>10} | {'Objective':>12} | Status"
@@ -149,7 +152,7 @@ def _parse_args() -> argparse.Namespace:
         "--time-limit",
         type=float,
         default=DEFAULT_TIME_LIMIT,
-        help=f"Time limit per instance in seconds (default: {DEFAULT_TIME_LIMIT:.0f}).",
+        help="Time limit per instance in seconds (default: none / unlimited).",
     )
     parser.add_argument(
         "--delta",

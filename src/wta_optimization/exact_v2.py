@@ -25,10 +25,16 @@ from typing import Sequence
 import gurobipy as gp
 from gurobipy import GRB
 
-from .exact import (_EPS, _GRB_STATUS_MAP, _add_tangent_cuts,
-                    _compute_breakpoints, _compute_integer_solution,
-                    _finalize_solution, _normalize_integer_warm_start,
-                    _resolve_mu)
+from .bna_common import (
+    _EPS,
+    _GRB_STATUS_MAP,
+    add_tangent_cuts,
+    compute_breakpoints,
+    compute_integer_solution,
+    finalize_solution,
+    normalize_integer_warm_start,
+    resolve_mu,
+)
 from .models import WTAInstance, WTASolution
 
 
@@ -87,8 +93,8 @@ def solve_branch_and_adjust_v2(
         raise ValueError("delta must be positive")
 
     start = perf_counter()
-    mu_values = _resolve_mu(instance, mu)
-    warm_start_assignment = _normalize_integer_warm_start(
+    mu_values = resolve_mu(instance, mu)
+    warm_start_assignment = normalize_integer_warm_start(
         instance, warm_start, mu_values
     )
 
@@ -133,7 +139,7 @@ def solve_branch_and_adjust_v2(
 
             # Delta-based breakpoints per target
             B: list[list[float]] = [
-                _compute_breakpoints(
+                compute_breakpoints(
                     instance.destruction_probabilities, mu_values, j, delta
                 )
                 for j in range(targets)
@@ -222,7 +228,7 @@ def solve_branch_and_adjust_v2(
                 z_values = cb_model.cbGetSolution(cb_model._z_vars)
 
                 current_assignment, _, true_log_survival, true_target_cost, true_obj = (
-                    _compute_integer_solution(
+                    compute_integer_solution(
                         cb_model._x_keys,
                         x_values,
                         cb_model._mu_values,
@@ -258,7 +264,7 @@ def solve_branch_and_adjust_v2(
 
                     cb_model.cbSetSolution(inject_vars, inject_vals)
 
-                cb_model._lazy_cuts_added += _add_tangent_cuts(
+                cb_model._lazy_cuts_added += add_tangent_cuts(
                     cb_model, z_values, true_target_cost, true_log_survival
                 )
 
@@ -266,7 +272,7 @@ def solve_branch_and_adjust_v2(
 
             runtime = perf_counter() - start
             status_str = _GRB_STATUS_MAP.get(model.Status, f"status_{model.Status}")
-            final_assignment, final_obj = _finalize_solution(model, instance, x)
+            final_assignment, final_obj = finalize_solution(model, instance, x)
 
             return WTASolution(
                 assignment=final_assignment,

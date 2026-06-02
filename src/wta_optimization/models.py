@@ -47,4 +47,3 @@ class WTASolution:
             for target_index, value in enumerate(row)
             if value == 1
         ]
-

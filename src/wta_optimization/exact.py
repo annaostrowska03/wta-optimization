@@ -197,6 +197,7 @@ def _compute_breakpoints(
 
     return b_list
 
+
 def _resolve_mu(
     instance: WTAInstance,
     mu: Sequence[int] | None = None,

@@ -5,11 +5,10 @@ from time import perf_counter
 from typing import Sequence
 
 import gurobipy as gp
-import pulp
 from gurobipy import GRB
 from scipy.optimize import broyden1
 
-from .models import WTAInstance, WTASolution, objective_value
+from .models import WTAInstance, WTASolution
 
 _EPS = 1e-10
 _MIN_EXP = 1e-320
@@ -122,31 +121,6 @@ def _finalize_solution(
     return empty, float("inf")
 
 
-def _normalize_warm_start(
-    instance: WTAInstance,
-    warm_start: WTASolution | Sequence[Sequence[int]] | None,
-) -> tuple[tuple[int, ...], ...] | None:
-    """Normalizes the warm start to a tuple-of-tuples with binary values."""
-    if warm_start is None:
-        return None
-
-    assignment = (
-        warm_start.assignment if isinstance(warm_start, WTASolution) else warm_start
-    )
-    if len(assignment) != instance.weapons:
-        raise ValueError(
-            "warm start assignment row count must match the number of weapons"
-        )
-
-    normalized: list[tuple[int, ...]] = []
-    for row in assignment:
-        if len(row) != instance.targets:
-            raise ValueError("each warm start row must match the number of targets")
-        normalized.append(tuple(int(bool(v)) for v in row))
-
-    return tuple(normalized)
-
-
 def _compute_breakpoints(
     destruction_probs: tuple[tuple[float, ...], ...],
     mu: list[int],
@@ -222,94 +196,6 @@ def _compute_breakpoints(
                 b_list.append(0.0)
 
     return b_list
-
-
-def solve_exact(
-    instance: WTAInstance,
-    num_piecewise_segments: int = 20,
-    warm_start: WTASolution | Sequence[Sequence[int]] | None = None,
-    time_limit_seconds: float | None = None,
-) -> WTASolution:
-    """
-    Approximate MILP (WTA_A from Section 3 of Andersen) solved via PuLP/CBC.
-
-    Uses a convex overapproximation of exp(y) by tangents — gives an upper bound
-    on the objective value (does not solve the problem exactly).
-    """
-    start = perf_counter()
-    warm_start_assignment = _normalize_warm_start(instance, warm_start)
-
-    prob = pulp.LpProblem("WTA_A", pulp.LpMinimize)
-
-    x = [
-        [
-            pulp.LpVariable(f"x_{i}_{j}", cat=pulp.LpBinary)
-            for j in range(instance.targets)
-        ]
-        for i in range(instance.weapons)
-    ]
-    z = [pulp.LpVariable(f"z_{j}", lowBound=0.0) for j in range(instance.targets)]
-    y = [pulp.LpVariable(f"y_{j}") for j in range(instance.targets)]
-
-    if warm_start_assignment is not None:
-        for i in range(instance.weapons):
-            for j in range(instance.targets):
-                x[i][j].setInitialValue(warm_start_assignment[i][j])
-
-    prob += pulp.lpSum(
-        instance.target_values[j] * z[j] for j in range(instance.targets)
-    )
-
-    for i in range(instance.weapons):
-        prob += pulp.lpSum(x[i]) <= 1
-
-    for j in range(instance.targets):
-        ln_q = [
-            math.log(max(1.0 - instance.destruction_probabilities[i][j], _EPS))
-            for i in range(instance.weapons)
-        ]
-        prob += y[j] == pulp.lpSum(x[i][j] * ln_q[i] for i in range(instance.weapons))
-
-        min_y_j = sum(v for v in ln_q if v < 0)
-        if min_y_j < 0:
-            step = abs(min_y_j) / max(1, num_piecewise_segments - 1)
-            for k in range(num_piecewise_segments):
-                pk = min_y_j + k * step
-                exp_pk = math.exp(pk)
-                prob += z[j] >= exp_pk + exp_pk * (y[j] - pk)
-        else:
-            prob += z[j] >= 1.0
-
-    solver = pulp.PULP_CBC_CMD(
-        msg=0,
-        warmStart=warm_start_assignment is not None,
-        keepFiles=warm_start_assignment is not None,
-        timeLimit=time_limit_seconds,
-    )
-    prob.solve(solver)
-    solver_status = pulp.LpStatus.get(prob.status, f"status_{prob.status}")
-
-    assignment = [[0] * instance.targets for _ in range(instance.weapons)]
-    for i in range(instance.weapons):
-        for j in range(instance.targets):
-            if pulp.value(x[i][j]) is not None and pulp.value(x[i][j]) > 0.5:
-                assignment[i][j] = 1
-
-    frozen = tuple(tuple(row) for row in assignment)
-    runtime = perf_counter() - start
-
-    return WTASolution(
-        assignment=frozen,
-        objective_value=objective_value(instance, frozen),
-        runtime_seconds=runtime,
-        method=(
-            "exact_mip_pulp_linearized_warm_start"
-            if warm_start_assignment is not None
-            else "exact_mip_pulp_linearized"
-        ),
-        status=solver_status,
-    )
-
 
 def _resolve_mu(
     instance: WTAInstance,
@@ -443,11 +329,10 @@ def solve_branch_and_adjust(
         value of target j, a lazy cut is added that is active only for exactly
         this integer assignment x*.
 
-    Important implementation detail:
-        For x[i,j] with mu[i] > 1, one-hot value indicators are added:
-            is_value[i,j,k] = 1 iff x[i,j] = k.
-        These indicators make the lazy adjustment cut valid for integer-count
-        assignments, not only for binary assignments.
+    Implementation detail:
+        The model uses integer x[i,j] directly (without one-hot expansion).
+        Lazy cuts are generated at MIPSOL points from the true nonlinear cost
+        of the incumbent assignment.
     """
     if delta <= 0:
         raise ValueError("delta must be positive for Branch-and-Adjust")

@@ -48,19 +48,3 @@ class WTASolution:
             if value == 1
         ]
 
-
-def objective_value(
-    instance: WTAInstance,
-    assignment: Sequence[Sequence[int]],
-) -> float:
-    """Compute total expected survived target value for a given assignment."""
-    survival = 0.0
-    for target_index, target_value in enumerate(instance.target_values):
-        target_survival = target_value
-        for weapon_index in range(instance.weapons):
-            if assignment[weapon_index][target_index]:
-                target_survival *= (
-                    1.0 - instance.destruction_probabilities[weapon_index][target_index]
-                )
-        survival += target_survival
-    return survival

@@ -1,4 +1,6 @@
 ﻿import argparse
+from multiprocessing import Process, Queue
+from queue import Empty
 import re
 from pathlib import Path
 
@@ -9,6 +11,47 @@ from wta_optimization.exact import solve_branch_and_adjust
 from wta_optimization.exact_v2 import solve_branch_and_adjust_v2
 
 DEFAULT_TIME_LIMIT: float | None = None
+
+
+def _solve_single_instance_worker(
+    filepath_str: str,
+    method: str,
+    bna_delta: float,
+    time_limit_seconds: float | None,
+    out_queue: Queue,
+) -> None:
+    """Solve one instance in a child process so parent survives worker crashes."""
+    try:
+        filepath = Path(filepath_str)
+        nums = [int(x) for x in re.findall(r"\d+", filepath.stem)]
+        weapons, targets, _ = nums[0], nums[1], nums[2]
+
+        instance, mu = load_andersen_instance(filepath)
+        mu_list = [mu] * instance.weapons
+        solver_fn = (
+            solve_branch_and_adjust_v2 if method == "bna_v2" else solve_branch_and_adjust
+        )
+        sol = solver_fn(
+            instance,
+            delta=bna_delta,
+            warm_start=None,
+            time_limit_seconds=time_limit_seconds,
+            mu=mu_list,
+        )
+        out_queue.put(
+            {
+                "ok": True,
+                "file": filepath.name,
+                "weapons": weapons,
+                "targets": targets,
+                "mu": mu,
+                "bna_time_s": sol.runtime_seconds,
+                "bna_obj": sol.objective_value,
+                "bna_status": sol.status,
+            }
+        )
+    except Exception as exc:
+        out_queue.put({"ok": False, "error": str(exc)})
 
 
 def run_andersen_benchmark(
@@ -55,10 +98,6 @@ def run_andersen_benchmark(
         )
         csv_path = output_dir / csv_name
 
-    solver_fn = (
-        solve_branch_and_adjust_v2 if method == "bna_v2" else solve_branch_and_adjust
-    )
-
     # If using a custom results file, always rerun all requested files
     if results_file is not None:
         results = []
@@ -93,40 +132,47 @@ def run_andersen_benchmark(
         nums = [int(x) for x in re.findall(r"\d+", filepath.stem)]
         weapons, targets, mu_val = nums[0], nums[1], nums[2]
 
-        try:
-            instance, mu = load_andersen_instance(filepath)
-            mu_list = [mu] * instance.weapons
+        q: Queue = Queue(maxsize=1)
+        proc = Process(
+            target=_solve_single_instance_worker,
+            args=(str(filepath), method, bna_delta, time_limit_seconds, q),
+        )
+        proc.start()
+        proc.join()
 
-            sol = solver_fn(
-                instance,
-                delta=bna_delta,
-                warm_start=None,
-                time_limit_seconds=time_limit_seconds,
-                mu=mu_list,
-            )
-
-            row = {
-                "file": fname,
-                "weapons": weapons,
-                "targets": targets,
-                "mu": mu,
-                "bna_time_s": sol.runtime_seconds,
-                "bna_obj": sol.objective_value,
-                "bna_status": sol.status,
+        payload: dict
+        if proc.exitcode == 0:
+            try:
+                payload = q.get_nowait()
+            except Empty:
+                payload = {
+                    "ok": False,
+                    "error": "worker_finished_without_result",
+                }
+        else:
+            payload = {
+                "ok": False,
+                "error": f"worker_crashed_exit_code_{proc.exitcode}",
             }
-            results.append(row)
+
+        q.close()
+        q.join_thread()
+
+        if payload.get("ok"):
+            results.append(payload)
             print(
-                f"{fname:<22} | {weapons:>4} | {targets:>4} | {mu:>3} | {sol.runtime_seconds:>10.2f} | {sol.objective_value:>12.4f} | {sol.status}"
+                f"{fname:<22} | {payload['weapons']:>4} | {payload['targets']:>4} | {payload['mu']:>3} | {payload['bna_time_s']:>10.2f} | {payload['bna_obj']:>12.4f} | {payload['bna_status']}"
             )
-        except Exception as exc:
-            print(f"{fname:<22} | ERROR: {exc}")
+        else:
+            error_text = str(payload.get("error", "unknown_error"))
+            print(f"{fname:<22} | ERROR: {error_text}")
             results.append(
                 {
                     "file": fname,
                     "weapons": weapons,
                     "targets": targets,
                     "mu": mu_val,
-                    "error": str(exc),
+                    "error": error_text,
                 }
             )
 

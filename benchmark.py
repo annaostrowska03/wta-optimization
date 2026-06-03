@@ -1,8 +1,8 @@
 ﻿import argparse
-from multiprocessing import Process, Queue
-from queue import Empty
 import re
+from multiprocessing import Process, Queue
 from pathlib import Path
+from queue import Empty
 
 import pandas as pd
 
@@ -29,7 +29,9 @@ def _solve_single_instance_worker(
         instance, mu = load_andersen_instance(filepath)
         mu_list = [mu] * instance.weapons
         solver_fn = (
-            solve_branch_and_adjust_v2 if method == "bna_v2" else solve_branch_and_adjust
+            solve_branch_and_adjust_v2
+            if method == "bna_v2"
+            else solve_branch_and_adjust
         )
         sol = solver_fn(
             instance,

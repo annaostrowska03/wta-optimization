@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-
 # =============================================================================
 # Paths
 # =============================================================================
@@ -25,6 +24,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # =============================================================================
 # Helpers
 # =============================================================================
+
 
 def parse_filename(filename: str) -> tuple[int, int, int]:
     """
@@ -317,9 +317,7 @@ comparison["instance_label"] = (
     + comparison["targets"].astype(int).astype(str)
 )
 
-comparison = comparison.sort_values(
-    ["mu", "weapons", "targets"]
-).reset_index(drop=True)
+comparison = comparison.sort_values(["mu", "weapons", "targets"]).reset_index(drop=True)
 
 comparison.to_csv(
     OUTPUT_DIR / "comparison_merged.csv",
@@ -367,9 +365,7 @@ save_figure(fig, "01_runtime_bna_vs_bnav2_by_mu.png")
 # Figure 2: Direct runtime scatter
 # =============================================================================
 
-paired_runtime = comparison.dropna(
-    subset=["BnA_time_s", "BnA_v2_time_s"]
-).copy()
+paired_runtime = comparison.dropna(subset=["BnA_time_s", "BnA_v2_time_s"]).copy()
 
 fig, ax = plt.subplots(figsize=(7.5, 6.5))
 
@@ -463,9 +459,7 @@ for _, row in comparison.iterrows():
     }
 
     available = {
-        method: value
-        for method, value in candidates.items()
-        if pd.notna(value)
+        method: value for method, value in candidates.items() if pd.notna(value)
     }
 
     if not available:
@@ -615,14 +609,10 @@ comparisons_to_andersen = [
 ]
 
 for ax, (method_name, objective_column) in zip(axes, comparisons_to_andersen):
-    part = comparison.dropna(
-        subset=[objective_column, "Andersen_UB"]
-    ).copy()
+    part = comparison.dropna(subset=[objective_column, "Andersen_UB"]).copy()
 
     part["relative_difference_pct"] = (
-        100.0
-        * (part[objective_column] - part["Andersen_UB"])
-        / part["Andersen_UB"]
+        100.0 * (part[objective_column] - part["Andersen_UB"]) / part["Andersen_UB"]
     )
 
     for mu in sorted(part["mu"].dropna().unique()):
@@ -739,9 +729,9 @@ latex_table_lines = [
     "\\endlastfoot",
 ]
 
-table_data = comparison.sort_values(
-    ["mu", "weapons", "targets", "file"]
-).reset_index(drop=True)
+table_data = comparison.sort_values(["mu", "weapons", "targets", "file"]).reset_index(
+    drop=True
+)
 
 latex_table_rows = []
 
@@ -857,9 +847,7 @@ summary_lines.append(
 summary_lines.append(
     "Use Andersen results as an external reference, not as a direct CPU-second comparison."
 )
-summary_lines.append(
-    "The controlled runtime comparison is BnA versus BnA-v2."
-)
+summary_lines.append("The controlled runtime comparison is BnA versus BnA-v2.")
 summary_lines.append(
     "Table 07 gaps are reference gaps against Andersen LB, not Gurobi MIP gaps."
 )

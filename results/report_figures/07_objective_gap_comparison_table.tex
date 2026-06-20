@@ -1,0 +1,56 @@
+% Requires in the LaTeX preamble:
+% \usepackage{booktabs}
+% \usepackage{longtable}
+%
+% If the table is too wide for the page, place \small before \input{...}.
+
+\begin{longtable}{@{}lrrrrrrr@{}}
+\caption{Comparison of objectives and reference optimality gaps. The gap is calculated as $100\cdot(UB-LB_{\mathrm{Andersen}})/|UB|$. Entries marked \texttt{error} correspond to solver failures.}\label{tab:wta-objective-gap-comparison} \\
+\toprule
+File & $\mu$ & BnA v1 obj. & BnA v2 obj. & Andersen UB & BnA v1 gap [\%] & BnA v2 gap [\%] & Andersen gap [\%] \\
+\midrule
+\endfirsthead
+
+\multicolumn{8}{c}{\tablename\ \thetable\ -- continued from previous page} \\
+\toprule
+File & $\mu$ & BnA v1 obj. & BnA v2 obj. & Andersen UB & BnA v1 gap [\%] & BnA v2 gap [\%] & Andersen gap [\%] \\
+\midrule
+\endhead
+
+\midrule
+\multicolumn{8}{r}{Continued on next page} \\
+\endfoot
+
+\bottomrule
+\endlastfoot
+\texttt{wta\_50x100x1.txt} & 1 & 1734.302 & 1734.302 & 1734.302 & 0.001 & 0.001 & 0.001 \\
+\texttt{wta\_100x200x1.txt} & 1 & 2862.303 & 2862.303 & 2862.303 & 0.009 & 0.009 & 0.009 \\
+\texttt{wta\_150x300x1.txt} & 1 & 3740.417 & 3740.444 & 3740.444 & 0.008 & 0.009 & 0.009 \\
+\texttt{wta\_200x400x1.txt} & 1 & \texttt{error} & 4970.364 & 4970.668 & \texttt{error} & 0.004 & 0.010 \\
+\texttt{wta\_250x500x1.txt} & 1 & 6690.157 & 6689.908 & 6689.957 & 0.013 & 0.009 & 0.010 \\
+\texttt{wta\_300x600x1.txt} & 1 & 8137.057 & 8137.176 & 8136.946 & 0.007 & 0.009 & 0.006 \\
+\texttt{wta\_350x700x1.txt} & 1 & 9049.868 & 9050.025 & 9049.868 & 0.004 & 0.006 & 0.004 \\
+\texttt{wta\_400x800x1.txt} & 1 & 11491.046 & 11491.097 & 11491.079 & 0.010 & 0.010 & 0.010 \\
+\texttt{wta\_450x900x1.txt} & 1 & \texttt{error} & \texttt{error} & 12521.673 & \texttt{error} & \texttt{error} & 0.010 \\
+\texttt{wta\_500x1000x1.txt} & 1 & -- & 13141.439 & 13141.445 & -- & 0.018 & 0.018 \\
+\texttt{wta\_50x100x2.txt} & 2 & 123.8385 & 123.8385 & 123.8385 & 0.010 & 0.010 & 0.010 \\
+\texttt{wta\_100x200x2.txt} & 2 & 116.0574 & 116.0574 & 116.0574 & 0.010 & 0.010 & 0.010 \\
+\texttt{wta\_150x300x2.txt} & 2 & 103.1510 & 103.1510 & 103.1510 & 0.003 & 0.003 & 0.003 \\
+\texttt{wta\_200x400x2.txt} & 2 & 115.4475 & 115.4475 & 115.4475 & 0.036 & 0.036 & 0.036 \\
+\texttt{wta\_250x500x2.txt} & 2 & 114.3507 & 114.3507 & 114.3507 & 0.077 & 0.077 & 0.077 \\
+\texttt{wta\_300x600x2.txt} & 2 & 118.5433 & 118.5497 & 118.5433 & 0.088 & 0.093 & 0.088 \\
+\texttt{wta\_350x700x2.txt} & 2 & 120.9867 & 120.9867 & 121.1238 & 0.268 & 0.268 & 0.381 \\
+\texttt{wta\_400x800x2.txt} & 2 & 129.2798 & 129.2798 & 129.3258 & 0.161 & 0.161 & 0.197 \\
+\texttt{wta\_450x900x2.txt} & 2 & 134.1718 & 134.1718 & 134.2522 & 0.278 & 0.278 & 0.338 \\
+\texttt{wta\_500x1000x2.txt} & 2 & -- & 123.7756 & 124.3607 & -- & 0.471 & 0.939 \\
+\texttt{wta\_50x100x3.txt} & 3 & 20.590016 & 20.590016 & 20.590016 & 0.010 & 0.010 & 0.010 \\
+\texttt{wta\_100x200x3.txt} & 3 & 14.579133 & 14.579133 & 14.579133 & 0.206 & 0.206 & 0.206 \\
+\texttt{wta\_150x300x3.txt} & 3 & 11.428722 & 11.428722 & 11.429016 & 0.393 & 0.393 & 0.396 \\
+\texttt{wta\_200x400x3.txt} & 3 & \texttt{error} & \texttt{error} & 10.577367 & \texttt{error} & \texttt{error} & 0.665 \\
+\texttt{wta\_250x500x3.txt} & 3 & \texttt{error} & \texttt{error} & 10.959830 & \texttt{error} & \texttt{error} & 0.942 \\
+\texttt{wta\_300x600x3.txt} & 3 & \texttt{error} & \texttt{error} & 13.100070 & \texttt{error} & \texttt{error} & 0.900 \\
+\texttt{wta\_350x700x3.txt} & 3 & \texttt{error} & \texttt{error} & 10.831706 & \texttt{error} & \texttt{error} & 1.410 \\
+\texttt{wta\_400x800x3.txt} & 3 & \texttt{error} & \texttt{error} & 11.984283 & \texttt{error} & \texttt{error} & 1.760 \\
+\texttt{wta\_450x900x3.txt} & 3 & \texttt{error} & \texttt{error} & 12.502190 & \texttt{error} & \texttt{error} & 1.750 \\
+\texttt{wta\_500x1000x3.txt} & 3 & -- & \texttt{error} & 12.076208 & -- & \texttt{error} & 2.023 \\
+\end{longtable}

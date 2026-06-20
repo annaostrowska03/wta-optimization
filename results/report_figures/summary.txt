@@ -1,0 +1,12 @@
+WTA benchmark summary
+============================================================
+Number of compared instances: 30
+
+BnA: proven optimal on 19/30 instances
+BnA-v2: proven optimal on 22/30 instances
+Andersen: proven optimal on 13/30 instances
+
+Runtime note: Andersen runtimes come from another experimental environment.
+Use Andersen results as an external reference, not as a direct CPU-second comparison.
+The controlled runtime comparison is BnA versus BnA-v2.
+Table 07 gaps are reference gaps against Andersen LB, not Gurobi MIP gaps.
